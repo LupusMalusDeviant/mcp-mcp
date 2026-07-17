@@ -13,7 +13,16 @@
     <Project Path="tests/McpMcp.Upstream.Tests/McpMcp.Upstream.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/McpMcp.TestServers/" />
+  <Folder Name="/tests/McpMcp.TestServers/CrashServer/">
+    <Project Path="tests/McpMcp.TestServers/CrashServer/McpMcp.TestServers.CrashServer.csproj" />
+  </Folder>
   <Folder Name="/tests/McpMcp.TestServers/EchoServer/">
     <Project Path="tests/McpMcp.TestServers/EchoServer/McpMcp.TestServers.EchoServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/McpMcp.TestServers/HttpServer/">
+    <Project Path="tests/McpMcp.TestServers/HttpServer/McpMcp.TestServers.HttpServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/McpMcp.TestServers/SlowServer/">
+    <Project Path="tests/McpMcp.TestServers/SlowServer/McpMcp.TestServers.SlowServer.csproj" />
   </Folder>
 </Solution>

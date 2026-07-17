@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\McpMcp.Abstractions\McpMcp.Abstractions.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 
 </Project>

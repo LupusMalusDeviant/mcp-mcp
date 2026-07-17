@@ -1,0 +1,100 @@
+using System.Text.Json;
+using McpMcp.Abstractions;
+
+namespace McpMcp.Core.Upstreams;
+
+/// <summary>
+/// Decorator um eine Upstream-Verbindung: erzwingt den Per-Call-Timeout (FR-09) und zählt
+/// In-Flight-Calls für die Drain-Semantik (WP1.4). Der Supervisor gibt ausschließlich
+/// diese Hülle nach außen — nie die rohe Verbindung.
+/// </summary>
+public sealed class GuardedUpstreamConnection : IUpstreamConnection
+{
+    private readonly IUpstreamConnection _inner;
+    private readonly TimeSpan _callTimeout;
+    private readonly TimeProvider _time;
+    private int _inFlight;
+
+    public GuardedUpstreamConnection(IUpstreamConnection inner, TimeSpan callTimeout, TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(callTimeout, TimeSpan.Zero);
+        _inner = inner;
+        _callTimeout = callTimeout;
+        _time = timeProvider ?? TimeProvider.System;
+    }
+
+    public ServerId Id => _inner.Id;
+
+    public int InFlightCount => Volatile.Read(ref _inFlight);
+
+    public event EventHandler<UpstreamNotificationEventArgs>? NotificationReceived
+    {
+        add => _inner.NotificationReceived += value;
+        remove => _inner.NotificationReceived -= value;
+    }
+
+    public Task<UpstreamInventory> DiscoverAsync(CancellationToken ct)
+        => WithTimeoutAsync((inner, token) => inner.DiscoverAsync(token), "discover", ct);
+
+    public async Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct)
+    {
+        Interlocked.Increment(ref _inFlight);
+        try
+        {
+            return await WithTimeoutAsync((inner, token) => inner.CallToolAsync(toolName, args, token), toolName, ct)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inFlight);
+        }
+    }
+
+    public Task PingAsync(CancellationToken ct)
+        => WithTimeoutAsync(
+            async (inner, token) =>
+            {
+                await inner.PingAsync(token).ConfigureAwait(false);
+                return true;
+            },
+            "ping",
+            ct);
+
+    /// <summary>Wartet bis alle In-Flight-Calls beendet sind, höchstens <paramref name="grace"/>. True = idle erreicht.</summary>
+    public async Task<bool> WaitForIdleAsync(TimeSpan grace, CancellationToken ct)
+    {
+        var deadline = _time.GetUtcNow() + grace;
+        while (InFlightCount > 0)
+        {
+            if (_time.GetUtcNow() >= deadline)
+            {
+                return false;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25), _time, ct).ConfigureAwait(false);
+        }
+
+        return true;
+    }
+
+    public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+    private async Task<T> WithTimeoutAsync<T>(
+        Func<IUpstreamConnection, CancellationToken, Task<T>> operation,
+        string operationName,
+        CancellationToken ct)
+    {
+        using var timeoutCts = new CancellationTokenSource(_callTimeout, _time);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        try
+        {
+            return await operation(_inner, linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Upstream-Operation '{operationName}' auf '{Id}' überschritt den Timeout von {_callTimeout}.");
+        }
+    }
+}

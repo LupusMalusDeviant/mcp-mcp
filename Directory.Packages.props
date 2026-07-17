@@ -7,9 +7,11 @@
   <ItemGroup>
     <!-- MCP-Protokoll (ADR-0002) -->
     <PackageVersion Include="ModelContextProtocol" Version="1.4.1" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
 
     <!-- Hosting / ASP.NET Core -->
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.Web" Version="10.0.10" />
 
     <!-- Tests. FluentAssertions bewusst auf 7.x gepinnt: ab v8 kommerzielle
@@ -19,6 +21,7 @@
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="FluentAssertions" Version="7.2.2" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.8.0" />
   </ItemGroup>
 
 </Project>

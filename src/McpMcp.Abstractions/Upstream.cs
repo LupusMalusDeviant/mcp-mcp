@@ -100,12 +100,50 @@ public sealed class UpstreamNotificationEventArgs : EventArgs
     public JsonElement? Params { get; init; }
 }
 
+public enum UpstreamChangeKind
+{
+    Added = 0,
+    Removed = 1,
+    InventoryChanged = 2,
+    StateChanged = 3,
+}
+
+/// <summary>Signal des Supervisors an den Katalog (WP2) und die UI. Auslöser für tools/list_changed (FR-07).</summary>
+public sealed class UpstreamChangedEventArgs : EventArgs
+{
+    public required ServerId Server { get; init; }
+    public required UpstreamChangeKind Kind { get; init; }
+    public required UpstreamState State { get; init; }
+}
+
+/// <summary>Ein Eintrag der Konfigurations-Historie eines Upstream-Servers (FR-10).</summary>
+public sealed record UpstreamConfigVersion(ConfigVersionId Version, UpstreamServerConfig Config, DateTimeOffset SavedAt);
+
+/// <summary>
+/// Persistenz-Port für versionierte Upstream-Konfigurationen (FR-10). WP1 liefert einen
+/// In-Memory-Stub in Core; die EF-Core-Implementierung kommt mit WP3 (ADR-0007).
+/// </summary>
+public interface IUpstreamConfigStore
+{
+    /// <summary>Hängt eine neue Version an (append-only) und liefert deren Versionsnummer.</summary>
+    Task<ConfigVersionId> AppendVersionAsync(ServerId id, UpstreamServerConfig config, CancellationToken ct);
+
+    Task<UpstreamServerConfig?> GetVersionAsync(ServerId id, ConfigVersionId version, CancellationToken ct);
+
+    /// <summary>Historie aufsteigend nach Version; leer, wenn der Server unbekannt ist.</summary>
+    Task<IReadOnlyList<UpstreamConfigVersion>> GetHistoryAsync(ServerId id, CancellationToken ct);
+
+    /// <summary>Entfernt die komplette Historie eines Servers (bei endgültigem Remove).</summary>
+    Task RemoveAsync(ServerId id, CancellationToken ct);
+}
+
 /// <summary>Fabrik pro Transporttyp. Implementierungen: Stdio, StreamableHttp, OpenApi (ADR-0005/0008).</summary>
 public interface IUpstreamConnector
 {
     UpstreamTransportKind Kind { get; }
 
-    Task<IUpstreamConnection> ConnectAsync(UpstreamServerConfig config, CancellationToken ct);
+    /// <summary>Baut eine Verbindung auf. <paramref name="id"/> wird vom Supervisor vergeben und identifiziert die Verbindung in Events.</summary>
+    Task<IUpstreamConnection> ConnectAsync(ServerId id, UpstreamServerConfig config, CancellationToken ct);
 }
 
 /// <summary>
@@ -134,6 +172,17 @@ public interface IUpstreamConnection : IAsyncDisposable
 public interface IUpstreamSupervisor
 {
     IReadOnlyList<UpstreamStatus> Statuses { get; }
+
+    /// <summary>Wird bei Add/Remove/Zustands-/Inventarwechsel gefeuert. Handler müssen schnell und exception-frei sein.</summary>
+    event EventHandler<UpstreamChangedEventArgs>? Changed;
+
+    UpstreamStatus? GetStatus(ServerId id);
+
+    /// <summary>Letztes Discovery-Ergebnis; null wenn unbekannt oder nie verbunden.</summary>
+    UpstreamInventory? GetInventory(ServerId id);
+
+    /// <summary>Aktive (guarded) Verbindung für das Routing; null wenn nicht Healthy/Degraded.</summary>
+    IUpstreamConnection? GetConnection(ServerId id);
 
     Task<ServerId> AddAsync(UpstreamServerConfig config, CancellationToken ct);
 

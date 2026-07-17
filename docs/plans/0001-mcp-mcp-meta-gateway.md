@@ -156,6 +156,9 @@ public interface IAssetStore
 
 **Vertragsregeln:** (1) `IToolInvoker` ist der einzige Aufrufpfad — MCP-Endpoint, REST-Controller und UI-Testaufruf sind Adapter. (2) `IAuthorizationService.FilterVisible` ist die einzige Sichtbarkeitsquelle. (3) Kein Interface liefert SDK-Typen nach `Core`.
 
+**Vertrags-Änderungslog** (gemäß DO Nr. 6):
+- *2026-07-17 (WP1):* `IUpstreamConnector.ConnectAsync` erhält die vom Supervisor vergebene `ServerId` als ersten Parameter (Connector kann sie nicht kennen). `IUpstreamSupervisor` erweitert um `Changed`-Event (`UpstreamChangedEventArgs`: Added/Removed/InventoryChanged/StateChanged) sowie `GetStatus`/`GetInventory`/`GetConnection` — der Katalog (WP2) konsumiert Event + Inventar, das Routing (WP4) die Guarded-Connection. Neuer Persistenz-Port `IUpstreamConfigStore` (+ `UpstreamConfigVersion`) für FR-10; WP1 liefert In-Memory-Stub, WP3 die EF-Implementierung.
+
 ## 5. Arbeitspakete (Issues)
 
 Jedes WP ist als GitHub-Issue anlegbar (Titel = WP-Titel, Body = Schritte + DoD). Schätzung in T-Shirt-Größen (S ≤ 1 Tag, M ≤ 3 Tage, L ≤ 1 Woche). Reihenfolge = Nummerierung, Parallelität siehe Abschnitt 6.
@@ -169,7 +172,7 @@ Jedes WP ist als GitHub-Issue anlegbar (Titel = WP-Titel, Body = Schritte + DoD)
 
 **DoD:** CI grün auf beiden OS; `Abstractions` kompiliert ohne einzige externe Dependency; EchoServer beantwortet `initialize` + `tools/list` + Echo-Call, nachgewiesen durch einen ersten Integrationstest.
 
-### WP1 — Upstream-Konnektoren & Supervisor (L)
+### WP1 — Upstream-Konnektoren & Supervisor (L) ✅ *(umgesetzt 2026-07-17; Anmerkungen: Degraded-Zustand wird v1 nur bei Teil-Discovery genutzt, Verbindungsverlust geht direkt auf Failed [DoD-konform]; Windows-Hygiene via Job Object am Gateway-Prozess, Linux via stdio-EOF-Semantik)*
 
 **Schritte:**
 - WP1.1 (M): `StdioUpstreamConnector` + `StreamableHttpUpstreamConnector` auf SDK-Basis; Discovery (Tools/Resources/Prompts) → `UpstreamInventory`.

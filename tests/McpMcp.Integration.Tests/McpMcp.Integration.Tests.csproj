@@ -2,8 +2,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpMcp.Server\McpMcp.Server.csproj" />
-    <!-- Nur Build-Reihenfolge: der EchoServer wird als externer Prozess gestartet, nicht referenziert. -->
+    <!-- Nur Build-Reihenfolge: TestServer werden als externe Prozesse gestartet, nicht referenziert. -->
     <ProjectReference Include="..\McpMcp.TestServers\EchoServer\McpMcp.TestServers.EchoServer.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\McpMcp.TestServers\CrashServer\McpMcp.TestServers.CrashServer.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\McpMcp.TestServers\SlowServer\McpMcp.TestServers.SlowServer.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\McpMcp.TestServers\HttpServer\McpMcp.TestServers.HttpServer.csproj" ReferenceOutputAssembly="false" />
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />

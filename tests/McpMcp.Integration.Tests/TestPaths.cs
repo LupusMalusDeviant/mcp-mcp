@@ -4,26 +4,23 @@ namespace McpMcp.Integration.Tests;
 
 internal static class TestPaths
 {
-    /// <summary>Pfad zur gebauten EchoServer-Executable (gleiche Konfiguration/TFM wie das Testprojekt).</summary>
-    public static string EchoServerExecutable
+    /// <summary>Pfad zur gebauten Executable eines TestServers (Ordnername unter tests/McpMcp.TestServers).</summary>
+    public static string Executable(string serverFolder)
     {
-        get
-        {
-            var configuration = typeof(TestPaths).Assembly
-                .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "Debug";
-            var exeName = OperatingSystem.IsWindows()
-                ? "McpMcp.TestServers.EchoServer.exe"
-                : "McpMcp.TestServers.EchoServer";
-            var path = Path.Combine(
-                RepoRoot, "tests", "McpMcp.TestServers", "EchoServer",
-                "bin", configuration, "net10.0", exeName);
+        var configuration = typeof(TestPaths).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration ?? "Debug";
+        var exeName = $"McpMcp.TestServers.{serverFolder}" + (OperatingSystem.IsWindows() ? ".exe" : string.Empty);
+        var path = Path.Combine(
+            RepoRoot, "tests", "McpMcp.TestServers", serverFolder,
+            "bin", configuration, "net10.0", exeName);
 
-            return File.Exists(path)
-                ? path
-                : throw new FileNotFoundException(
-                    $"EchoServer-Executable nicht gefunden: {path}. Zuerst die Solution bauen.", path);
-        }
+        return File.Exists(path)
+            ? path
+            : throw new FileNotFoundException(
+                $"TestServer-Executable nicht gefunden: {path}. Zuerst die Solution bauen.", path);
     }
+
+    public static string EchoServerExecutable => Executable("EchoServer");
 
     private static string RepoRoot
     {
