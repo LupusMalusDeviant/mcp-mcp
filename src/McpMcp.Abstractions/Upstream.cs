@@ -36,12 +36,18 @@ public sealed record HttpTransportOptions(
     Uri Endpoint,
     IReadOnlyDictionary<string, string>? Headers = null);
 
-/// <summary>OpenAPI-Quelle als virtueller Upstream (FR-19). Credentials nie inline — nur als Referenz auf den verschlüsselten Store (NFR-04).</summary>
+/// <summary>
+/// OpenAPI-Quelle als virtueller Upstream (FR-19). <see cref="Credential"/> liegt im Config-Blob,
+/// der als Ganzes DataProtection-verschlüsselt persistiert wird (NFR-04, ADR-0007).
+/// Bearer: Credential = Token; Basic: Credential = "user:pass"; ApiKeyHeader: Credential = Key,
+/// Header-Name über <see cref="ApiKeyHeaderName"/> (Default X-Api-Key).
+/// </summary>
 public sealed record OpenApiTransportOptions(
     Uri SpecLocation,
     Uri? BaseAddress = null,
     OpenApiAuthKind AuthKind = OpenApiAuthKind.None,
-    string? CredentialReference = null);
+    string? Credential = null,
+    string? ApiKeyHeaderName = null);
 
 public sealed record RestartPolicy(
     int MaxRetries,

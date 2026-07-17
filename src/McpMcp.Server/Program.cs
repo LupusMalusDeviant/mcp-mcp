@@ -53,6 +53,7 @@ builder.Services.AddSingleton<IApiKeyValidator>(sp => sp.GetRequiredService<ApiK
 // ── Upstreams & Katalog (ADR-0005, WP2) ──────────────────────────────────────
 builder.Services.AddSingleton<IUpstreamConnector, StdioUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConnector, StreamableHttpUpstreamConnector>();
+builder.Services.AddSingleton<IUpstreamConnector, McpMcp.Upstream.OpenApi.OpenApiUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConfigStore, EfUpstreamConfigStore>();
 builder.Services.AddSingleton(new SupervisorOptions());
 builder.Services.AddSingleton<UpstreamSupervisor>(sp => new UpstreamSupervisor(
@@ -81,9 +82,12 @@ builder.Services.AddSingleton<IRedactionService>(sp => sp.GetRequiredService<Red
 builder.Services.AddSingleton<IToolInvoker, ToolInvoker>();
 builder.Services.AddSingleton<MetaToolService>();
 
-// ── MCP-Endpoint (WP4.2) ─────────────────────────────────────────────────────
+// ── MCP-Endpoint (WP4.2) + REST-Fassade (WP5) ────────────────────────────────
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<McpSessionRegistry>();
+builder.Services.AddSingleton<OpenApiDocumentGenerator>();
+builder.Services.ConfigureHttpJsonOptions(o =>
+    o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddMcpServer(options =>
     {
         options.ServerInfo = new Implementation { Name = "mcp-mcp", Version = "0.4.0" };
@@ -130,6 +134,7 @@ var app = builder.Build();
 
 app.UseMiddleware<ApiKeyAuthMiddleware>();
 app.MapMcp("/mcp");
+app.MapGatewayApi();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 app.MapGet("/readyz", async (IDbContextFactory<McpMcpDbContext> factory, IUpstreamSupervisor supervisor, CancellationToken ct) =>

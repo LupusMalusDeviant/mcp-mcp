@@ -17,7 +17,8 @@ public sealed class ApiKeyAuthMiddleware
     public async Task InvokeAsync(
         HttpContext context, IApiKeyValidator validator, IAuditSink audit, TimeProvider time)
     {
-        if (!context.Request.Path.StartsWithSegments("/mcp"))
+        if (!context.Request.Path.StartsWithSegments("/mcp")
+            && !context.Request.Path.StartsWithSegments("/api"))
         {
             await _next(context);
             return;
