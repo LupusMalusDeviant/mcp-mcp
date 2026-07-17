@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>IUpstreamConnector-Implementierungen: Stdio, StreamableHttp, OpenApi. Einziges src-Projekt neben Server mit ModelContextProtocol-Abhängigkeit (Client-Seite).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpMcp.Abstractions\McpMcp.Abstractions.csproj" />
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+</Project>

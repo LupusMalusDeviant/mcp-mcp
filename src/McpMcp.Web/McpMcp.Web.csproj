@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <Description>Blazor-UI (Razor Class Library). Ruft ausschließlich Application-Services aus Core — keine SDK-Typen, keine Persistenz-Direktzugriffe (ADR-0004).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpMcp.Core\McpMcp.Core.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" />
+  </ItemGroup>
+
+</Project>

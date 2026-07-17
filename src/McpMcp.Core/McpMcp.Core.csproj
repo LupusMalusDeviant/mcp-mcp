@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Domänenlogik: Katalog, RBAC, Profile, Invocation-Pipeline, Supervisor-Zustandsmaschine. SDK-frei (ADR-0002/0008).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpMcp.Abstractions\McpMcp.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

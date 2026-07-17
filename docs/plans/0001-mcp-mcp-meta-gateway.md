@@ -1,0 +1,342 @@
+# Plan 0001 — MCP-MCP: Implementation-Plan / Pflichtenheft
+
+| | |
+|---|---|
+| **Status** | Aktiv (lebendes Dokument) |
+| **Datum** | 2026-07-17 |
+| **Basis-PRD** | [0001-mcp-mcp-meta-gateway.md](../prd/0001-mcp-mcp-meta-gateway.md) (Lastenheft) |
+| **Bindende ADRs** | [0001](../adr/0001-zentraler-proxy-gateway-statt-direktanbindung.md)–[0008](../adr/0008-api-mcp-bridge-als-erstklassige-fassaden.md) |
+| **Rollen** | Senior PM (Scope/DoD), Senior-Tech-Specialist (Architektur/Performance) |
+
+---
+
+## 1. Kontext / Motivation
+
+Das PRD definiert *was* gebaut wird (Meta-MCP-Gateway, 7 Keyfeatures), die ADRs *womit und warum* (.NET 10 + offizielles C# SDK, Proxy-Architektur, Hybrid-Token, Blazor, Supervisor-Prozessmodell, eigenes RBAC, EF Core, gemeinsamer Invocation-Kern). Dieser Plan übersetzt beides in Verträge (Interfaces), Arbeitspakete mit Definition of Done, Teststrategie und Konstruktionsregeln. Er ist das Pflichtenheft: Wer nur dieses Dokument und die ADRs liest, kann bauen.
+
+## 2. Ziele
+
+Identisch mit PRD Z-1 bis Z-6; Abnahme ausschließlich gegen PRD Abschnitt 8 (Akzeptanzkriterien 1–7). Keine Neudefinition hier.
+
+## 3. Architektur-Überblick
+
+### 3.1 Solution-Struktur
+
+```
+MCPMCP.slnx
+├── src/
+│   ├── McpMcp.Abstractions/        # NUR Interfaces + DTOs/Records. Keine Dependencies außer BCL.
+│   ├── McpMcp.Core/                # Domänenlogik: Katalog, RBAC, Profile, Invocation-Pipeline, Supervisor
+│   ├── McpMcp.Upstream/            # IUpstreamConnector-Implementierungen: Stdio, StreamableHttp, OpenApi
+│   ├── McpMcp.Persistence/         # EF Core: DbContext, Migrations, Repositories, Audit-Batch-Writer
+│   ├── McpMcp.Server/              # ASP.NET Core Host: MCP-Endpoint, REST-Fassade, AuthN, Health
+│   └── McpMcp.Web/                 # Blazor-UI (Razor Components), nutzt NUR Application-Services
+├── tests/
+│   ├── McpMcp.Core.Tests/          # Unit
+│   ├── McpMcp.Upstream.Tests/      # Unit + Prozess-Tests
+│   ├── McpMcp.Integration.Tests/   # End-to-End gegen echten Host (WebApplicationFactory + Test-MCP-Server)
+│   └── McpMcp.TestServers/         # Referenz-Upstreams: EchoServer (stdio), SlowServer, CrashServer, HttpServer
+└── docs/ (prd, adr, plans, security, blueprints)
+```
+
+Abhängigkeitsregel (erzwungen per Projektreferenzen): `Server → Core, Upstream, Persistence, Web` (der Host referenziert die UI-Komponenten — Hosting-Realität von Blazor); `Web → Core`; `Core/Upstream/Persistence → Abstractions`. **Nichts** referenziert `ModelContextProtocol`-Typen außer `Upstream` (Client-Seite) und `Server` (Server-Seite) — der Kern bleibt SDK-frei (ADR-0002/0008). *(Korrigiert 2026-07-17 bei WP0-Umsetzung; ursprünglich stand hier `Web → Server`.)*
+
+### 3.2 Request-Fluss (der eine Pfad, ADR-0008)
+
+```
+Agent (MCP) ─┐
+REST-Client ─┼─► AuthN (API-Key) ─► IToolInvoker-Pipeline:
+Blazor-UI  ──┘      RBAC-Check ─► Arg-Validierung ─► Routing (IToolCatalog)
+                    ─► Timeout/Cancellation ─► IUpstreamConnection.CallToolAsync
+                    ─► Audit (immer, auch bei Deny/Fehler) ─► Ergebnis
+```
+
+## 4. Interface-first: Kernverträge (C#)
+
+Verbindliche v1-Verträge in `McpMcp.Abstractions`. Änderungen an diesen Signaturen sind PR-Review-pflichtig und im Plan nachzuziehen. (Namespaces/Usings weggelassen; alle DTOs sind `record`s, alle Methoden `CancellationToken`-führend.)
+
+```csharp
+// ── Identität & Autorisierung (ADR-0006) ─────────────────────────────
+public interface IAuthorizationService
+{
+    /// Einzige Autorisierungsentscheidung im System. Reine Funktion über einem Snapshot.
+    AuthorizationDecision Evaluate(IdentityId identity, PermissionScope scope, ToolAction action);
+    /// RBAC-gefilterte Sicht — speist tools/list, search_tools UND OpenAPI-Generierung.
+    IReadOnlyList<CatalogEntry> FilterVisible(IdentityId identity, IReadOnlyList<CatalogEntry> catalog);
+}
+public sealed record AuthorizationDecision(bool Allowed, string? DenyReason);
+public sealed record PermissionScope(ServerId? Server, NamespacedToolName? Tool); // Tool==null → Server-weit
+public enum ToolAction { UseTool, ReadResource, UsePrompt }
+
+public interface IApiKeyValidator
+{
+    ValueTask<IdentityId?> ValidateAsync(string presentedKey, CancellationToken ct); // Hash-Vergleich, null = invalid
+}
+
+// ── Katalog & Profile (ADR-0003) ─────────────────────────────────────
+public interface IToolCatalog
+{
+    /// Aggregierter, namespaced Gesamtkatalog (Quelle: alle Healthy-Upstreams).
+    IReadOnlyList<CatalogEntry> Snapshot { get; }
+    /// Sicht einer Identität gemäß Profil (Pinned voll, Rest lazy) + RBAC-Filter.
+    ProfileView GetViewFor(IdentityId identity);
+    IReadOnlyList<ToolSearchHit> Search(IdentityId identity, string query, int limit);
+    event EventHandler<CatalogChangedEventArgs> Changed; // löst tools/list_changed aus
+}
+public sealed record CatalogEntry(NamespacedToolName Name, ServerId Server, string Description,
+    JsonElement InputSchema, CatalogEntryKind Kind, int EstimatedSchemaTokens);
+public sealed record ProfileView(IReadOnlyList<CatalogEntry> PinnedTools, bool LazyToolsEnabled,
+    int EstimatedContextTokens);
+
+// ── Invocation-Kern (ADR-0008): der EINZIGE Weg zu einem Tool-Call ──
+public interface IToolInvoker
+{
+    Task<ToolInvocationResult> InvokeAsync(ToolInvocationRequest request, CancellationToken ct);
+}
+public sealed record ToolInvocationRequest(IdentityId Caller, CallOrigin Origin, // Mcp | Rest | Ui
+    NamespacedToolName Tool, JsonElement Arguments, TimeSpan? TimeoutOverride);
+public sealed record ToolInvocationResult(InvocationStatus Status, JsonElement? Content,
+    string? ErrorMessage, TimeSpan Duration);
+public enum InvocationStatus { Success, UpstreamError, Denied, Timeout, ValidationFailed, ToolNotFound }
+
+// ── Upstream-Abstraktion (ADR-0005/0008) ─────────────────────────────
+public interface IUpstreamConnector          // Fabrik pro Transporttyp: Stdio | StreamableHttp | OpenApi
+{
+    UpstreamTransportKind Kind { get; }
+    Task<IUpstreamConnection> ConnectAsync(UpstreamServerConfig config, CancellationToken ct);
+}
+public interface IUpstreamConnection : IAsyncDisposable
+{
+    ServerId Id { get; }
+    Task<UpstreamInventory> DiscoverAsync(CancellationToken ct);   // Tools+Resources+Prompts
+    Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct);
+    Task PingAsync(CancellationToken ct);                          // Health-Probe
+    event EventHandler<UpstreamNotificationEventArgs> NotificationReceived; // u.a. list_changed von unten
+}
+
+public interface IUpstreamSupervisor          // Hosted Service; besitzt alle Lifecycles (ADR-0005)
+{
+    IReadOnlyList<UpstreamStatus> Statuses { get; }
+    Task<ServerId> AddAsync(UpstreamServerConfig config, CancellationToken ct);        // Add→Connect→Discover→Changed
+    Task RemoveAsync(ServerId id, DrainPolicy drain, CancellationToken ct);
+    Task SetEnabledAsync(ServerId id, bool enabled, CancellationToken ct);
+    Task<ConfigVersionId> ReconfigureAsync(ServerId id, UpstreamServerConfig config, CancellationToken ct);
+    Task RollbackAsync(ServerId id, ConfigVersionId version, CancellationToken ct);
+}
+public sealed record UpstreamStatus(ServerId Id, UpstreamState State, string? LastError,
+    int ToolCount, DateTimeOffset LastHealthyAt);
+public enum UpstreamState { Starting, Healthy, Degraded, Stopped, Failed }
+
+// ── Audit (ADR-0007) ─────────────────────────────────────────────────
+public interface IAuditSink                   // Hot-Path-Seite: darf NIE blockieren
+{
+    void Record(AuditEvent evt);              // fire-and-forget in Channel; Batch-Writer persistiert
+}
+public interface IAuditQuery                  // UI-/Export-Seite
+{
+    Task<PagedResult<AuditEvent>> QueryAsync(AuditFilter filter, CancellationToken ct);
+}
+public sealed record AuditEvent(DateTimeOffset Timestamp, IdentityId? Caller, CallOrigin Origin,
+    AuditEventKind Kind, ServerId? Server, string? Tool, InvocationStatus? Status,
+    JsonElement? RedactedArguments, long? RequestBytes, long? ResponseBytes, TimeSpan? Duration);
+
+public interface IRedactionService
+{
+    JsonElement RedactArguments(NamespacedToolName tool, JsonElement args); // Regeln pro Tool, Default-Regeln global
+}
+
+// ── Skill-/Asset-Verteilung (FR-40) ──────────────────────────────────
+public interface IAssetStore
+{
+    Task<IReadOnlyList<AssetInfo>> ListAsync(IdentityId identity, CancellationToken ct);
+    Task<AssetContent> GetAsync(AssetId id, AssetVersion? version, CancellationToken ct);
+    Task<AssetVersion> PublishAsync(AssetId id, string content, CancellationToken ct);
+}
+```
+
+**Vertragsregeln:** (1) `IToolInvoker` ist der einzige Aufrufpfad — MCP-Endpoint, REST-Controller und UI-Testaufruf sind Adapter. (2) `IAuthorizationService.FilterVisible` ist die einzige Sichtbarkeitsquelle. (3) Kein Interface liefert SDK-Typen nach `Core`.
+
+## 5. Arbeitspakete (Issues)
+
+Jedes WP ist als GitHub-Issue anlegbar (Titel = WP-Titel, Body = Schritte + DoD). Schätzung in T-Shirt-Größen (S ≤ 1 Tag, M ≤ 3 Tage, L ≤ 1 Woche). Reihenfolge = Nummerierung, Parallelität siehe Abschnitt 6.
+
+### WP0 — Projekt-Fundament (M) ✅ *(umgesetzt 2026-07-17; DoD lokal erfüllt, CI-Lauf auf beiden OS steht bis zum ersten Push aus)*
+
+**Schritte:**
+- WP0.1 (S): Solution-Skelett gemäß 3.1, `Directory.Packages.props`, Analyzer + `TreatWarningsAsErrors`, `.editorconfig`, git init + CI (Build + Test auf Windows & Linux).
+- WP0.2 (S): `McpMcp.Abstractions` vollständig anlegen (alle Verträge aus Abschnitt 4 + DTOs/IDs als strongly-typed records).
+- WP0.3 (S): Test-Infrastruktur: xUnit, FluentAssertions, `McpMcp.TestServers/EchoServer` (minimaler stdio-MCP-Server via C# SDK) baubar.
+
+**DoD:** CI grün auf beiden OS; `Abstractions` kompiliert ohne einzige externe Dependency; EchoServer beantwortet `initialize` + `tools/list` + Echo-Call, nachgewiesen durch einen ersten Integrationstest.
+
+### WP1 — Upstream-Konnektoren & Supervisor (L)
+
+**Schritte:**
+- WP1.1 (M): `StdioUpstreamConnector` + `StreamableHttpUpstreamConnector` auf SDK-Basis; Discovery (Tools/Resources/Prompts) → `UpstreamInventory`.
+- WP1.2 (M): `UpstreamSupervisor` als Hosted Service: Zustandsmaschine, Health-Ping-Loop, Exponential-Backoff-Restart (Policy konfigurierbar), Prozess-Hygiene (Windows Job Objects / Linux Prozessgruppen — kein Orphan überlebt Gateway-Exit).
+- WP1.3 (S): Add/Remove/Reconfigure/Rollback inkl. Config-Versionierung (Persistenz-Stub in-memory, echte DB in WP3).
+- WP1.4 (S): Drain-Semantik: Remove wartet konfigurierbar auf In-Flight-Calls, dann Cancel; Fault Isolation via Timeout pro Call.
+
+**DoD:** Kill des EchoServer-Prozesses → Status `Failed` → Auto-Restart → `Healthy`, ohne dass ein parallel laufender zweiter Upstream einen Call verliert (Integrationstest CrashServer). `AddAsync` bis `Changed`-Event < 5 s. Kein Zombie-Prozess nach Host-Shutdown (OS-spezifischer Test).
+
+### WP2 — Katalog, Profile & RBAC (L)
+
+**Schritte:**
+- WP2.1 (M): `ToolCatalog`: Aggregation, Namespacing (`server__tool`), Kollisionsfreiheit, Token-Schätzung (chars/4), `Changed`-Event.
+- WP2.2 (M): RBAC-Datenmodell (Identity/Role/Grant) + Snapshot-Compiler + `AuthorizationService.Evaluate` als reine Funktion; Default-Deny; Server→Tool-Vererbung.
+- WP2.3 (S): Profile (Pinned + Lazy-Flag) und `GetViewFor`; `Search` mit Keyword-Score über Name+Beschreibung.
+- WP2.4 (S): Rate-Limiter pro Identität (Token-Bucket, Rollen-Attribut) vor dem Invoker.
+
+**DoD:** RBAC-Testmatrix (≥ 20 Fälle aus PRD-Kriterium 4) 100 % grün; Property-Test „nie sichtbar, was nicht erlaubt" über zufällige Grant-Kombinationen grün; Branch-Coverage der Evaluate/Filter-Pfade = 100 %; Katalog mit 100 Tools liefert `GetViewFor` < 10 ms.
+
+### WP3 — Persistenz & Audit (M)
+
+**Schritte:**
+- WP3.1 (M): EF-Core-Modell + Migrations (SQLite & PostgreSQL), Repositories für Config/RBAC/Profile; Data-Protection-Key-Ring + Secret-Verschlüsselung der Upstream-Credentials.
+- WP3.2 (M): Audit-Pipeline: `Channel<AuditEvent>` + Batch-Writer (Flush ≤ 1 s / ≤ 500 Events), `IAuditQuery` mit Filter+Paging, Retention-Job, `IRedactionService` (globale Defaults: `password|token|secret|key|authorization`-Felder; per-Tool-Regeln).
+- WP3.3 (S): API-Keys: Erzeugung (nur einmal im Klartext sichtbar), Hash-Speicherung (PBKDF2/Argon2), Widerruf, Gültigkeitsfenster.
+
+**DoD:** 1000-Call-Lasttest erzeugt exakt 1000 Audit-Zeilen, korrekt attribuiert, Secrets maskiert (PRD-Kriterium 5); Integrationstests laufen in CI gegen SQLite **und** PostgreSQL (Testcontainer); `Record()` p99 < 50 µs (nicht-blockierend nachgewiesen); DB-Datei enthält keine Klartext-Secrets (Scan-Test).
+
+### WP4 — Invocation-Kern & MCP-Endpoint (L)
+
+**Schritte:**
+- WP4.1 (M): `ToolInvoker`-Pipeline gemäß 3.2 inkl. serverseitiger JSON-Schema-Validierung der Argumente (Pflicht für Lazy-Pfad, ADR-0003) und Timeout/Cancellation.
+- WP4.2 (M): MCP-Server-Endpoint (Streamable HTTP, SDK): `initialize`, `tools/list` (aus `ProfileView`), `tools/call` → Invoker, `notifications/tools/list_changed` bei Katalog-/Profil-/RBAC-Änderung; Resources/Prompts-Durchreichung; Session-Verwaltung pro Identität.
+- WP4.3 (S): Meta-Tools `search_tools`, `describe_tool`, `invoke_tool` als eingebaute Tools über denselben Invoker.
+- WP4.4 (S): AuthN-Middleware (API-Key als Bearer), `/healthz` + `/readyz`, strukturierte Logs, OTel-Metriken (Calls/s, Fehlerquote, Latenz-Histogramme pro Server/Tool).
+
+**DoD:** Claude Code und MCP Inspector verbinden sich erfolgreich; Hot-Swap-Nachweis aus PRD-Kriterium 3 als automatisierter Integrationstest; Latenz-Overhead ≤ 50 ms p95 im Benchmark (EchoServer, 100 parallele Calls, NFR-01/02); RBAC-Deny via MCP liefert sauberen Tool-Error und Audit-Eintrag.
+
+### WP5 — REST-Fassade & OpenAPI-Bridge (L)
+
+**Schritte:**
+- WP5.1 (M): REST→MCP: `POST /api/v1/tools/{name}/invoke`, `GET /api/v1/tools` (RBAC-gefiltert), Fehler-Mapping (Denied→403, NotFound→404, Timeout→504, ValidationFailed→400); Management-API für Server/RBAC/Profile (Basis für UI-Parität und FR-41).
+- WP5.2 (S): Dynamische OpenAPI-3.1-Generierung pro Identität aus deren Katalog-Sicht (Cache mit Invalidierung über `Changed`).
+- WP5.3 (M): API→MCP: `OpenApiUpstreamConnector` — Spec-Import (URL/Datei), Operation→Tool-Mapping, `$ref`-Auflösung, Auth-Profile (ApiKey/Bearer/Basic), harte Ablehnung nicht unterstützter Features mit präziser Fehlermeldung.
+
+**DoD:** `curl`-Roundtrip mit API-Key gegen EchoServer-Tool grün; identischer Call via MCP und REST erzeugt bit-identische Audit-Semantik (Testvergleich); Petstore-ähnliche Referenz-Spec importiert → Operationen als Tools aufrufbar, hot-swappable wie echte Server; nicht unterstützte Spec bricht mit verständlicher Meldung ab, nie mit Halbimport.
+
+### WP6 — Blazor Web-UI (L)
+
+**Schritte:**
+- WP6.1 (M): UI-Gerüst, lokales Admin-Login (ASP.NET Identity, Cookie), UI-Rollen Admin/Operator/Auditor.
+- WP6.2 (M): Server-Verwaltung (Formulare stdio/HTTP/OpenAPI, „Verbindung testen", Enable/Disable, Rollback) + Dashboard (Live-Health, Sessions, Call-Rate).
+- WP6.3 (M): Tool-Explorer (Suche, Schema-Ansicht, Test-Aufruf über Invoker mit Origin=Ui), RBAC-Verwaltung (Identitäten, Keys, Rollen, Grants, Profile inkl. Pinning), Log-Ansicht (Filter, Export JSON/CSV), Token-Cockpit (`EstimatedContextTokens` pro Profil).
+- WP6.4 (S): Skill-/Asset-Verwaltung (FR-40): CRUD + Versionen; Auslieferung als MCP-Prompts/Resources über den Katalog.
+
+**DoD:** PRD-Abnahmekriterium 1 (Referenz-Setup komplett ohne Config-Datei) manuell durchgespielt und als Playwright-E2E-Smoke automatisiert (anlegen → Key erzeugen → Tool testen → Log sehen); Auditor-Rolle kann nachweislich nichts verändern (403-Tests); UI-Zugriffe erscheinen im Audit-Log.
+
+### WP7 — Härtung, Performance-Nachweis & Release (M)
+
+**Schritte:**
+- WP7.1 (S): Lasttest-Suite (NFR-01/02: 20 Sessions, 100 In-Flight-Calls; Report ins Repo), Token-Messung des Referenz-Setups (PRD-Kriterium 2, ≥ 80 %).
+- WP7.2 (S): `repo-security-audit`-Skill ausführen; Findings ≥ High fixen; Threat-Model-Kurzdoku (Gateway als Credential-Ziel, ADR-0001/0005-Risiken).
+- WP7.3 (S): Dockerfile (multi-arch), docker-compose-Beispiel, Betriebs-Doku (Env-Vars, Backup, Reverse-Proxy/TLS, Retention), README + Quickstart.
+- WP7.4 (S): Federation-Smoke (FR-05, Should): MCP-MCP als Upstream eines zweiten MCP-MCP, Loop-Detection via Server-Fingerprint.
+
+**DoD:** Alle 7 PRD-Abnahmekriterien dokumentiert erfüllt (je Kriterium: Test oder protokollierter Nachweis); Docker-Image < 300 MB; Security-Audit ohne offene High/Critical; v1.0.0-Tag.
+
+## 6. Abhängigkeiten
+
+```
+WP0 ─► WP1 ─► WP2 ─► WP4 ─► WP5 ─► WP7
+        │      └───► WP3 ──┘        ▲
+        └──────────────────► WP6 ───┘   (WP6 startet nach WP4; braucht Management-API-Basis aus WP5.1)
+```
+
+- WP2 und WP3 sind nach WP1 parallelisierbar (RBAC in-memory testbar, Persistenz unabhängig).
+- Externe Abhängigkeiten: keine Beschaffung; einzig SDK-Releases (`ModelContextProtocol` ≥ 1.2) und .NET 10 SDK.
+- Zyklenfrei geprüft.
+
+## 7. Teststrategie
+
+### 7.1 Unit-Tests (Projekt: `*.Tests`, Framework xUnit + FluentAssertions, keine echten Prozesse/Netz/DB)
+
+| Bereich | Schwerpunkt | Coverage-Ziel |
+|---|---|---|
+| RBAC (`Evaluate`, `FilterVisible`, Snapshot-Compiler) | 20er-Matrix, Vererbung, Default-Deny, Property-Tests (FsCheck): „sichtbar ⇒ erlaubt" | 100 % Branch |
+| Katalog | Namespacing, Kollisionen, Token-Schätzung, Changed-Semantik | ≥ 90 % |
+| Invoker-Pipeline | Statusmatrix (jeder `InvocationStatus` erreichbar), Timeout, Schema-Validierungsfehler, Audit-genau-einmal | 100 % Branch |
+| Redaction | Default-Regeln, per-Tool-Regeln, verschachtelte Objekte/Arrays, Nicht-Mutation des Originals | 100 % Branch |
+| Supervisor-Zustandsmaschine | alle Übergänge, Backoff-Berechnung, Drain (mit Fake-Connection + FakeTimeProvider) | ≥ 95 % |
+| Profile/Search | Pinned+Lazy-Kombinatorik, Score-Ranking, leere Treffer | ≥ 90 % |
+| OpenAPI-Mapping | Operation→Tool, `$ref`, Ablehnungsfälle (multipart, OAuth-Flows) | ≥ 90 % |
+
+Gesamtziel Kern-Bibliotheken ≥ 80 % Zeilen (NFR-08), gemessen in CI (Coverlet), PR-Gate.
+
+### 7.2 Integrationstests (`McpMcp.Integration.Tests`, WebApplicationFactory + TestServers)
+
+1. **Lifecycle:** Add/Remove/Reconfigure/Rollback gegen echten EchoServer-Prozess; CrashServer-Restart; Zombie-Check bei Host-Shutdown (je OS).
+2. **Hot-Swap E2E:** verbundener SDK-Client erhält `list_changed`, kann neues Tool sofort rufen (PRD-Kriterium 3).
+3. **RBAC E2E:** identische Matrix wie Unit, aber über echten MCP- und REST-Pfad — beweist Pfad-Konsistenz (ADR-0008).
+4. **Audit E2E:** 1000 gemischte Calls (Erfolg/Deny/Timeout via SlowServer) → Zeilenzahl, Attribution, Redaction (PRD-Kriterium 5); gegen SQLite und PostgreSQL (Testcontainers).
+5. **Bridge:** REST-Invoke, OpenAPI-Spec-Abruf, OpenAPI-Import-Roundtrip.
+6. **Meta-Tools:** search→describe→invoke-Kette; invoke mit Schema-Fehler → `ValidationFailed`.
+7. **Performance-Smoke** (nightly, nicht PR-Gate): NFR-01/02-Benchmark mit Schwellwert-Assertion.
+8. **UI-Smoke** (Playwright, ab WP6): Referenz-Setup-Durchstich.
+
+### 7.3 Testdaten & Fixtures
+
+`McpMcp.TestServers` liefert deterministische Upstreams: **Echo** (normal), **Slow** (konfigurierbare Latenz → Timeout-Tests), **Crash** (stirbt nach N Calls → Supervisor-Tests), **Http** (Streamable-HTTP-Variante). Keine externen Live-Server in Tests.
+
+## 8. DO's und DON'Ts (Konstruktionsregeln, PR-Review-Checkliste)
+
+**DO:**
+1. Jeder Tool-Call — egal welcher Herkunft — läuft durch `IToolInvoker`. Ohne Ausnahme.
+2. Jede Sichtbarkeitsentscheidung läuft durch `IAuthorizationService.FilterVisible`. `tools/list`, `search_tools`, REST-`GET /tools` und OpenAPI-Gen teilen dieselbe Quelle.
+3. Default-Deny überall: neuer Endpoint/neues Feature startet unsichtbar/verboten.
+4. Jede `async`-Methode nimmt und propagiert `CancellationToken`; jeder Upstream-Call hat einen Timeout.
+5. Audit zuerst designen: neue Aktion ⇒ zuerst `AuditEventKind` definieren, dann Feature bauen.
+6. Interfaces in `Abstractions` ändern nur mit Plan-Update + Review (Verträge sind API).
+7. Strukturierte Logs mit `ServerId`/`IdentityId`/`CorrelationId` in jedem Scope.
+8. Beide DB-Provider in CI testen, bevor ein EF-Feature genutzt wird.
+9. Fehler von Upstreams als Daten behandeln (Status + Message), nie als ungefangene Exception zum Client durchschlagen lassen.
+10. Windows- und Linux-Prozesspfade getrennt testen (ADR-0005-Risiko).
+
+**DON'T:**
+1. Keine SDK-Typen (`ModelContextProtocol.*`) in `Core`/`Abstractions`/`Web` — nur `Upstream` und `Server` dürfen sie sehen.
+2. Kein Klartext-Secret in Logs, Audit, DB, Exceptions oder UI — auch nicht „nur im Debug-Modus" (Debug loggt Payloads, aber nach Redaction).
+3. Kein blockierender I/O im Hot Path — `IAuditSink.Record` bleibt synchron-nicht-blockierend, alles andere async.
+4. Keine RBAC-/Sichtbarkeitslogik in UI oder Controllern duplizieren („zur Sicherheit nochmal prüfen" verboten — es gibt eine Quelle).
+5. Kein `Task.Result`/`.Wait()`/`async void` (außer Event-Handlern mit Try/Catch).
+6. Keine stillen Teilerfolge: OpenAPI-Import, Config-Änderung, Server-Add sind atomar — ganz oder mit Fehler zurückgerollt.
+7. Kein globaler veränderlicher Zustand außerhalb der dafür vorgesehenen Snapshot-Stores (Katalog/RBAC-Snapshot sind immutable-swap).
+8. Keine ungeprüfte Weitergabe von Upstream-Beschreibungstexten in die UI ohne Encoding (Tool-Descriptions sind fremder Input — XSS).
+9. Keine neuen NuGet-Abhängigkeiten ohne Lizenz-Check (NFR-10) und Eintrag in `Directory.Packages.props`.
+10. Keine Feature-Arbeit an einem WP beginnen, dessen vorgelagerte DoD nicht erfüllt ist.
+
+## 9. Risiken & Mitigationen
+
+| # | Risiko | W'keit | Impact | Mitigation |
+|---|---|---|---|---|
+| R1 | SDK-Abstraktionen verhindern sauberes Proxying (z. B. Notification-Durchreichung) | mittel | hoch | Spike in WP1.1 zeitlich boxen (2 Tage); Fallback: `ModelContextProtocol.Core`-Low-Level (ADR-0002 sieht das vor) |
+| R2 | Windows/Linux-Prozessmanagement (Orphans, Signale) frisst Zeit | hoch | mittel | Früh in WP1.2 auf beiden OS in CI testen; Job-Object-/Prozessgruppen-Code isoliert kapseln |
+| R3 | Schema-Validierung beliebiger Tool-Schemas (JSON-Schema-Dialekte) unvollständig | mittel | mittel | Etablierte Lib (JsonSchema.Net) + definierter Fallback: bei nicht validierbarem Schema durchlassen und Ereignis loggen (Draft-Vielfalt der Server) |
+| R4 | Blazor-Server-Circuits + Live-Daten führen zu Memory-Leaks bei Dauerbetrieb | niedrig | mittel | Dashboard-Subscriptions über `IDisposable`-Pattern, 24-h-Soak-Test in WP7.1 |
+| R5 | Token-Ersparnis-Ziel (≥ 80 %) verfehlt, weil Agenten Pinned-Tools massenhaft brauchen | niedrig | mittel | Token-Cockpit früh (WP2.1-Schätzer), Referenzmessung schon nach WP4, nicht erst WP7 |
+| R6 | Scope-Creep durch Could-Features (Approval-Flows, Webhooks, Federation-Vollausbau) | hoch | mittel | Could bleibt aus v1 draußen; jede Aufnahme nur per PRD-Änderung durch Product Owner |
+| R7 | Bösartiger/instabiler Upstream kompromittiert Gateway-Host (ADR-0005-Restrisiko) | niedrig | hoch | Doku-Warnung, Betrieb als non-root-Container empfohlen; v2-Pfad Container-Isolation offengehalten |
+| R8 | Ein-Personen-Projekt: Bus-Faktor und Review-Lücke | hoch | mittel | Dieses Doku-Set + ADR-Pflicht + PR-Selbstreview gegen Abschnitt 8; Code-Review-Skill je WP-Abschluss |
+
+## 10. Meilensteine
+
+| MS | Inhalt | Nachweis | Ziel |
+|---|---|---|---|
+| **M1 „Skelett spricht"** | WP0–WP1 | EchoServer via Gateway von MCP Inspector aufrufbar; Crash-Restart-Demo | +3 Wochen |
+| **M2 „Kontrollpunkt steht"** | WP2–WP4 | Hot-Swap-, RBAC- und Audit-Integrationstests grün; Claude Code angebunden; Latenz-Benchmark bestanden | +7 Wochen |
+| **M3 „Beide Brücken tragen"** | WP5 | REST-Roundtrip + OpenAPI-Import-Demo, Pfad-Konsistenz-Test grün | +9 Wochen |
+| **M4 „v1.0 abnehmbar"** | WP6–WP7 | Alle 7 PRD-Abnahmekriterien erfüllt, Docker-Release, Security-Audit clean | +13 Wochen |
+
+Summe Schätzung ≈ 10–11 Wochen Netto-Einzelarbeit; mit 25 % Puffer ≈ 13 Wochen (Teilzeit entsprechend strecken).
+
+## 11. Erfolgskriterien
+
+Ausschließlich PRD Abschnitt 8 (Kriterien 1–7). Der Plan gilt als abgearbeitet, wenn jedes WP seine DoD erfüllt **und** die PRD-Abnahme dokumentiert ist (`docs/acceptance/v1.md`, entsteht in WP7).
+
+## 12. Offene Punkte
+
+1. PRD OQ-2 (konkrete Referenz-Server des Betreibers) — vor WP1-Ende klären, beeinflusst TestServers-Auswahl nicht, wohl aber die M2-Demo.
+2. UI-Komponentenbibliothek (ADR-0004-Folgeentscheidung) — Entscheidung zu WP6-Start.
+3. PRD OQ-3/OQ-4 (async REST, Skill-Datei-Sync) — bewusst auf nach-M4 vertagt.
+4. GitHub-Repo/Remote noch nicht angelegt (Verzeichnis ist noch kein git-Repo) — Teil von WP0.1.

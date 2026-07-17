@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <Description>ASP.NET-Core-Host: MCP-Endpoint, REST-Fassade, AuthN, Health. Einziges src-Projekt neben Upstream mit MCP-SDK-Sicht (Server-Seite, ab WP4).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpMcp.Core\McpMcp.Core.csproj" />
+    <ProjectReference Include="..\McpMcp.Upstream\McpMcp.Upstream.csproj" />
+    <ProjectReference Include="..\McpMcp.Persistence\McpMcp.Persistence.csproj" />
+    <ProjectReference Include="..\McpMcp.Web\McpMcp.Web.csproj" />
+  </ItemGroup>
+
+</Project>

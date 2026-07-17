@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>EF-Core-Persistenz: DbContext, Migrations, Repositories, Audit-Batch-Writer (ADR-0007). EF-Pakete kommen mit WP3.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpMcp.Abstractions\McpMcp.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

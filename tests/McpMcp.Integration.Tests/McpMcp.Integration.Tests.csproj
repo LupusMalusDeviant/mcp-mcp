@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\McpMcp.Server\McpMcp.Server.csproj" />
+    <!-- Nur Build-Reihenfolge: der EchoServer wird als externer Prozess gestartet, nicht referenziert. -->
+    <ProjectReference Include="..\McpMcp.TestServers\EchoServer\McpMcp.TestServers.EchoServer.csproj" ReferenceOutputAssembly="false" />
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>
