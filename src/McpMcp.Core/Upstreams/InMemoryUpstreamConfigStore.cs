@@ -53,6 +53,23 @@ public sealed class InMemoryUpstreamConfigStore : IUpstreamConfigStore
         return Task.FromResult<IReadOnlyList<UpstreamConfigVersion>>([]);
     }
 
+    public Task<IReadOnlyDictionary<ServerId, UpstreamConfigVersion>> GetAllLatestAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<ServerId, UpstreamConfigVersion>();
+        foreach (var (id, history) in _histories)
+        {
+            lock (history)
+            {
+                if (history.Count > 0)
+                {
+                    result[id] = history[^1];
+                }
+            }
+        }
+
+        return Task.FromResult<IReadOnlyDictionary<ServerId, UpstreamConfigVersion>>(result);
+    }
+
     public Task RemoveAsync(ServerId id, CancellationToken ct)
     {
         _histories.TryRemove(id, out _);

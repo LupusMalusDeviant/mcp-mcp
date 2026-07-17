@@ -51,6 +51,12 @@ public sealed class GuardedUpstreamConnection : IUpstreamConnection
         }
     }
 
+    public Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct)
+        => WithTimeoutAsync((inner, token) => inner.ReadResourceAsync(uri, token), "resources/read", ct);
+
+    public Task<JsonElement> GetPromptAsync(string promptName, JsonElement? args, CancellationToken ct)
+        => WithTimeoutAsync((inner, token) => inner.GetPromptAsync(promptName, args, token), "prompts/get", ct);
+
     public Task PingAsync(CancellationToken ct)
         => WithTimeoutAsync(
             async (inner, token) =>

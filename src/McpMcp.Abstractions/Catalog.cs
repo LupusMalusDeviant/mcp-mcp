@@ -59,5 +59,8 @@ public interface IToolCatalog
     /// <summary>Keyword-Suche über Name + Beschreibung, RBAC-gefiltert (FR-12, FR-29).</summary>
     IReadOnlyList<ToolSearchHit> Search(IdentityId identity, string query, int limit);
 
+    /// <summary>Schneller Eintrag-Lookup fürs Routing (WP4); null wenn unbekannt. Ohne RBAC-Prüfung — die macht der Invoker.</summary>
+    CatalogEntry? Find(NamespacedToolName name);
+
     event EventHandler<CatalogChangedEventArgs>? Changed;
 }

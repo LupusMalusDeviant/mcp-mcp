@@ -21,6 +21,7 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
     private readonly IRbacDirectory _directory;
     private readonly ILogger<ToolCatalog> _logger;
     private volatile IReadOnlyList<CatalogEntry> _snapshot = [];
+    private volatile Dictionary<NamespacedToolName, CatalogEntry> _byName = [];
 
     public ToolCatalog(
         IUpstreamSupervisor supervisor,
@@ -44,6 +45,8 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
     public event EventHandler<CatalogChangedEventArgs>? Changed;
 
     public IReadOnlyList<CatalogEntry> Snapshot => _snapshot;
+
+    public CatalogEntry? Find(NamespacedToolName name) => _byName.GetValueOrDefault(name);
 
     public ProfileView GetViewFor(IdentityId identity)
     {
@@ -172,6 +175,7 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
         }
 
         _snapshot = entries;
+        _byName = entries.ToDictionary(e => e.Name);
     }
 
     private void AddEntry(

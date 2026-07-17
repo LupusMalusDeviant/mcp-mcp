@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\McpMcp.Abstractions\McpMcp.Abstractions.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="JsonSchema.Net" />
   </ItemGroup>
 
 </Project>

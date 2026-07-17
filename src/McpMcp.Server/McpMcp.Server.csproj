@@ -9,6 +9,7 @@
     <ProjectReference Include="..\McpMcp.Upstream\McpMcp.Upstream.csproj" />
     <ProjectReference Include="..\McpMcp.Persistence\McpMcp.Persistence.csproj" />
     <ProjectReference Include="..\McpMcp.Web\McpMcp.Web.csproj" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
   </ItemGroup>
 
 </Project>

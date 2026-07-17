@@ -72,6 +72,35 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
         return id;
     }
 
+    /// <summary>
+    /// Registriert einen persistierten Server unter seiner bestehenden Id neu (Startup-Restore, WP4.2).
+    /// Erzeugt keine neue Config-Version — die Historie lebt bereits im Store.
+    /// </summary>
+    public Task RestoreAsync(ServerId id, UpstreamConfigVersion persisted, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(persisted);
+        UpstreamConfigValidator.Validate(persisted.Config);
+        EnsureSlugUnique(persisted.Config.Slug, exclude: id);
+
+        var entry = new Entry(id, persisted.Config, persisted.Version)
+        {
+            State = persisted.Config.Enabled ? UpstreamState.Starting : UpstreamState.Stopped,
+        };
+
+        if (!_entries.TryAdd(id, entry))
+        {
+            throw new InvalidOperationException($"Server {id} ist bereits registriert — Restore doppelt aufgerufen?");
+        }
+
+        Raise(entry, UpstreamChangeKind.Added);
+        if (persisted.Config.Enabled)
+        {
+            StartLoop(entry);
+        }
+
+        return Task.CompletedTask;
+    }
+
     public async Task RemoveAsync(ServerId id, DrainPolicy drain, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(drain);

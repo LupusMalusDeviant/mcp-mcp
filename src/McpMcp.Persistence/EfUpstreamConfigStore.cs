@@ -77,6 +77,21 @@ public sealed class EfUpstreamConfigStore : IUpstreamConfigStore
         return [.. rows.Select(r => new UpstreamConfigVersion(new ConfigVersionId(r.Version), Deserialize(r), r.SavedAt))];
     }
 
+    public async Task<IReadOnlyDictionary<ServerId, UpstreamConfigVersion>> GetAllLatestAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var latest = await db.ConfigVersions
+            .AsNoTracking()
+            .GroupBy(r => r.ServerId)
+            .Select(g => g.OrderByDescending(r => r.Version).First())
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return latest.ToDictionary(
+            r => new ServerId(r.ServerId),
+            r => new UpstreamConfigVersion(new ConfigVersionId(r.Version), Deserialize(r), r.SavedAt));
+    }
+
     public async Task RemoveAsync(ServerId id, CancellationToken ct)
     {
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);

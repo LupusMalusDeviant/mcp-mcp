@@ -80,6 +80,20 @@ internal sealed class SdkUpstreamConnection : IUpstreamConnection
         return JsonSerializer.SerializeToElement(result, McpJsonUtilities.DefaultOptions);
     }
 
+    public async Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        var result = await _client.ReadResourceAsync(uri, cancellationToken: ct).ConfigureAwait(false);
+        return JsonSerializer.SerializeToElement(result, McpJsonUtilities.DefaultOptions);
+    }
+
+    public async Task<JsonElement> GetPromptAsync(string promptName, JsonElement? args, CancellationToken ct)
+    {
+        IReadOnlyDictionary<string, object?>? arguments = args is { } a ? JsonArguments.ToDictionary(a) : null;
+        var result = await _client.GetPromptAsync(promptName, arguments, cancellationToken: ct).ConfigureAwait(false);
+        return JsonSerializer.SerializeToElement(result, McpJsonUtilities.DefaultOptions);
+    }
+
     public async Task PingAsync(CancellationToken ct)
         => await _client.PingAsync(cancellationToken: ct).ConfigureAwait(false);
 

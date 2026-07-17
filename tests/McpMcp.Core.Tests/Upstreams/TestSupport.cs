@@ -99,8 +99,19 @@ internal sealed class FakeUpstreamConnection : IUpstreamConnection
 
     public Task<UpstreamInventory> DiscoverAsync(CancellationToken ct) => Task.FromResult(Inventory);
 
+    /// <summary>Wenn gesetzt, wirft CallToolAsync diese Exception.</summary>
+    public Exception? CallException { get; set; }
+
+    public string? LastToolName { get; private set; }
+
     public async Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct)
     {
+        LastToolName = toolName;
+        if (CallException is { } ex)
+        {
+            throw ex;
+        }
+
         if (CallGate is { } gate)
         {
             await using var registration = ct.Register(() => gate.TrySetCanceled(ct)).ConfigureAwait(false);
@@ -109,6 +120,12 @@ internal sealed class FakeUpstreamConnection : IUpstreamConnection
 
         return JsonSerializer.SerializeToElement(new { tool = toolName });
     }
+
+    public Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct)
+        => Task.FromResult(JsonSerializer.SerializeToElement(new { contents = new[] { new { uri = uri.ToString() } } }));
+
+    public Task<JsonElement> GetPromptAsync(string promptName, JsonElement? args, CancellationToken ct)
+        => Task.FromResult(JsonSerializer.SerializeToElement(new { messages = Array.Empty<object>() }));
 
     public Task PingAsync(CancellationToken ct)
         => _failPing ? Task.FromException(new IOException("Verbindung tot (Test).")) : Task.CompletedTask;

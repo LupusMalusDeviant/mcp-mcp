@@ -121,6 +121,12 @@ public class GuardedUpstreamConnectionTests
         public Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct)
             => Task.FromResult(TestData.EmptySchema());
 
+        public Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct)
+            => Task.FromResult(TestData.EmptySchema());
+
+        public Task<JsonElement> GetPromptAsync(string promptName, JsonElement? args, CancellationToken ct)
+            => Task.FromResult(TestData.EmptySchema());
+
         public async Task PingAsync(CancellationToken ct) => await Task.Delay(Timeout.InfiniteTimeSpan, ct);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

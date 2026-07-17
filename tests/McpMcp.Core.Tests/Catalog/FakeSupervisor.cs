@@ -7,6 +7,7 @@ namespace McpMcp.Core.Tests.Catalog;
 internal sealed class FakeSupervisor : IUpstreamSupervisor
 {
     private readonly Dictionary<ServerId, (UpstreamStatus Status, UpstreamInventory? Inventory)> _servers = [];
+    private readonly Dictionary<ServerId, IUpstreamConnection> _connections = [];
 
     public event EventHandler<UpstreamChangedEventArgs>? Changed;
 
@@ -16,7 +17,19 @@ internal sealed class FakeSupervisor : IUpstreamSupervisor
 
     public UpstreamInventory? GetInventory(ServerId id) => _servers.TryGetValue(id, out var v) ? v.Inventory : null;
 
-    public IUpstreamConnection? GetConnection(ServerId id) => null;
+    public IUpstreamConnection? GetConnection(ServerId id) => _connections.GetValueOrDefault(id);
+
+    public void SetConnection(ServerId id, IUpstreamConnection? connection)
+    {
+        if (connection is null)
+        {
+            _connections.Remove(id);
+        }
+        else
+        {
+            _connections[id] = connection;
+        }
+    }
 
     public ServerId SetServer(string slug, UpstreamInventory? inventory, UpstreamState state = UpstreamState.Healthy)
     {

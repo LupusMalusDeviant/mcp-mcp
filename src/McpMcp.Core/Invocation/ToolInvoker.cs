@@ -1,0 +1,241 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using System.Text.Json;
+using Json.Schema;
+using McpMcp.Abstractions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace McpMcp.Core.Invocation;
+
+/// <summary>
+/// Der EINZIGE Weg zu einem Tool-Call (ADR-0008, DO Nr. 1):
+/// RateLimit → Routing-Lookup → RBAC → Schema-Validierung → Upstream-Call mit Timeout → Audit.
+/// Wirft nie bei fachlichen Fehlern; jeder Pfad endet in genau einem <see cref="ToolInvocationResult"/>
+/// und genau einem Audit-Event (DO Nr. 5). Nicht validierbare Schemas lassen den Call durch
+/// und werden geloggt (Plan-Risiko R3 — Draft-Vielfalt der Server).
+/// </summary>
+public sealed partial class ToolInvoker : IToolInvoker, IDisposable
+{
+    private static readonly Meter Meter = new("McpMcp.Gateway");
+
+    private readonly IAuthorizationService _authorization;
+    private readonly IRateLimiter _rateLimiter;
+    private readonly IToolCatalog _catalog;
+    private readonly IUpstreamSupervisor _supervisor;
+    private readonly IAuditSink _audit;
+    private readonly IRedactionService _redaction;
+    private readonly TimeProvider _time;
+    private readonly ILogger<ToolInvoker> _logger;
+    private readonly Counter<long> _calls;
+    private readonly Histogram<double> _duration;
+
+    public ToolInvoker(
+        IAuthorizationService authorization,
+        IRateLimiter rateLimiter,
+        IToolCatalog catalog,
+        IUpstreamSupervisor supervisor,
+        IAuditSink audit,
+        IRedactionService redaction,
+        TimeProvider? timeProvider = null,
+        ILogger<ToolInvoker>? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        ArgumentNullException.ThrowIfNull(rateLimiter);
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(supervisor);
+        ArgumentNullException.ThrowIfNull(audit);
+        ArgumentNullException.ThrowIfNull(redaction);
+        _authorization = authorization;
+        _rateLimiter = rateLimiter;
+        _catalog = catalog;
+        _supervisor = supervisor;
+        _audit = audit;
+        _redaction = redaction;
+        _time = timeProvider ?? TimeProvider.System;
+        _logger = logger ?? NullLogger<ToolInvoker>.Instance;
+        _calls = Meter.CreateCounter<long>("mcpmcp.tool_calls", description: "Tool-Calls durch den Gateway");
+        _duration = Meter.CreateHistogram<double>("mcpmcp.tool_call_duration", unit: "ms");
+    }
+
+    public async Task<ToolInvocationResult> InvokeAsync(ToolInvocationRequest request, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var started = Stopwatch.GetTimestamp();
+        CatalogEntry? entry = null;
+        ToolInvocationResult result;
+
+        try
+        {
+            if (!_rateLimiter.TryAcquire(request.Caller))
+            {
+                result = Fail(InvocationStatus.Denied, "Rate-Limit überschritten oder Identität unbekannt (FR-31).", started);
+            }
+            else if ((entry = _catalog.Find(request.Tool)) is null)
+            {
+                result = Fail(InvocationStatus.ToolNotFound, $"Tool '{request.Tool}' existiert nicht.", started);
+            }
+            else
+            {
+                var decision = _authorization.Evaluate(
+                    request.Caller, new PermissionScope(entry.Server, entry.Name), ToolAction.UseTool);
+                if (!decision.Allowed)
+                {
+                    result = Fail(InvocationStatus.Denied, decision.DenyReason ?? "Verweigert (Default-Deny).", started);
+                }
+                else if (ValidateArguments(entry, request.Arguments) is { } validationError)
+                {
+                    result = Fail(InvocationStatus.ValidationFailed, validationError, started);
+                }
+                else
+                {
+                    result = await CallUpstreamAsync(entry, request, started, ct).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.UnexpectedPipelineError(_logger, ex, request.Tool.Value);
+            result = Fail(InvocationStatus.UpstreamError, $"Interner Gateway-Fehler: {ex.Message}", started);
+        }
+
+        Audit(request, entry, result);
+        _calls.Add(1,
+            new KeyValuePair<string, object?>("tool", request.Tool.Value),
+            new KeyValuePair<string, object?>("status", result.Status.ToString()),
+            new KeyValuePair<string, object?>("origin", request.Origin.ToString()));
+        _duration.Record(result.Duration.TotalMilliseconds,
+            new KeyValuePair<string, object?>("tool", request.Tool.Value),
+            new KeyValuePair<string, object?>("status", result.Status.ToString()));
+        return result;
+    }
+
+    public void Dispose()
+    {
+        // Meter ist statisch/global — nichts freizugeben; Platzhalter für spätere Ressourcen.
+    }
+
+    private async Task<ToolInvocationResult> CallUpstreamAsync(
+        CatalogEntry entry, ToolInvocationRequest request, long started, CancellationToken ct)
+    {
+        var connection = _supervisor.GetConnection(entry.Server);
+        if (connection is null)
+        {
+            return Fail(InvocationStatus.UpstreamError,
+                $"Upstream-Server für '{entry.Name}' ist nicht verbunden (Status: {_supervisor.GetStatus(entry.Server)?.State.ToString() ?? "unbekannt"}).",
+                started);
+        }
+
+        if (!entry.Name.TrySplit(out _, out var upstreamToolName))
+        {
+            return Fail(InvocationStatus.UpstreamError, $"'{entry.Name}' ist kein gültiger Namespaced-Name.", started);
+        }
+
+        using var overrideCts = request.TimeoutOverride is { } t
+            ? new CancellationTokenSource(t, _time)
+            : null;
+        using var linked = overrideCts is null
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(ct, overrideCts.Token);
+        var effectiveCt = linked?.Token ?? ct;
+
+        try
+        {
+            var content = await connection.CallToolAsync(upstreamToolName, request.Arguments, effectiveCt)
+                .ConfigureAwait(false);
+            return new ToolInvocationResult(InvocationStatus.Success, content, null, Elapsed(started));
+        }
+        catch (TimeoutException ex)
+        {
+            return Fail(InvocationStatus.Timeout, ex.Message, started);
+        }
+        catch (OperationCanceledException) when (overrideCts?.IsCancellationRequested == true && !ct.IsCancellationRequested)
+        {
+            return Fail(InvocationStatus.Timeout, $"Timeout-Override von {request.TimeoutOverride} überschritten.", started);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return Fail(InvocationStatus.Timeout, "Durch den Aufrufer abgebrochen.", started);
+        }
+        catch (Exception ex)
+        {
+            return Fail(InvocationStatus.UpstreamError, $"Upstream-Fehler: {ex.Message}", started);
+        }
+    }
+
+    /// <summary>Serverseitige Argument-Validierung — Pflicht für den Lazy-Pfad ohne Client-Schema (ADR-0003).</summary>
+    private string? ValidateArguments(CatalogEntry entry, JsonElement args)
+    {
+        if (entry.InputSchema.ValueKind is not JsonValueKind.Object)
+        {
+            return null; // kein Schema vorhanden → nichts zu validieren
+        }
+
+        JsonSchema schema;
+        try
+        {
+            schema = JsonSchema.FromText(entry.InputSchema.GetRawText());
+        }
+        catch (Exception ex)
+        {
+            Log.SchemaUnparseable(_logger, entry.Name.Value, ex.Message);
+            return null; // R3-Fallback: durchlassen und loggen statt fälschlich ablehnen
+        }
+
+        try
+        {
+            var instance = args.ValueKind is JsonValueKind.Undefined
+                ? JsonDocument.Parse("{}").RootElement
+                : args;
+            var evaluation = schema.Evaluate(instance, new EvaluationOptions { OutputFormat = OutputFormat.List });
+            if (evaluation.IsValid)
+            {
+                return null;
+            }
+
+            var firstError = (evaluation.Details ?? [])
+                .Where(d => d.Errors is { Count: > 0 })
+                .SelectMany(d => d.Errors!.Select(e => $"{d.InstanceLocation}: {e.Value}"))
+                .FirstOrDefault() ?? "Argumente entsprechen nicht dem Tool-Schema.";
+            return $"Argument-Validierung fehlgeschlagen — {firstError}";
+        }
+        catch (Exception ex)
+        {
+            Log.SchemaUnparseable(_logger, entry.Name.Value, ex.Message);
+            return null;
+        }
+    }
+
+    private void Audit(ToolInvocationRequest request, CatalogEntry? entry, ToolInvocationResult result)
+    {
+        var redacted = _redaction.RedactArguments(request.Tool, request.Arguments);
+        _audit.Record(new AuditEvent(
+            _time.GetUtcNow(),
+            request.Caller,
+            request.Origin,
+            AuditEventKind.ToolCall,
+            entry?.Server,
+            request.Tool.Value,
+            result.Status,
+            redacted.ValueKind is JsonValueKind.Undefined ? null : redacted,
+            RequestBytes: request.Arguments.ValueKind is JsonValueKind.Undefined ? 0 : request.Arguments.GetRawText().Length,
+            ResponseBytes: result.Content?.GetRawText().Length,
+            Duration: result.Duration));
+    }
+
+    private static ToolInvocationResult Fail(InvocationStatus status, string message, long started)
+        => new(status, null, message, Elapsed(started));
+
+    private static TimeSpan Elapsed(long started) => Stopwatch.GetElapsedTime(started);
+
+    private static partial class Log
+    {
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Schema von {Tool} nicht validierbar ({Reason}) — Call wird ohne Validierung durchgelassen (R3-Fallback).")]
+        public static partial void SchemaUnparseable(ILogger logger, string tool, string reason);
+
+        [LoggerMessage(Level = LogLevel.Error,
+            Message = "Unerwarteter Fehler in der Invoker-Pipeline für {Tool}.")]
+        public static partial void UnexpectedPipelineError(ILogger logger, Exception ex, string tool);
+    }
+}

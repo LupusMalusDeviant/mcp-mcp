@@ -134,6 +134,9 @@ public interface IUpstreamConfigStore
     /// <summary>Historie aufsteigend nach Version; leer, wenn der Server unbekannt ist.</summary>
     Task<IReadOnlyList<UpstreamConfigVersion>> GetHistoryAsync(ServerId id, CancellationToken ct);
 
+    /// <summary>Jeweils neueste Version aller bekannten Server — Grundlage für den Startup-Restore (WP4.2).</summary>
+    Task<IReadOnlyDictionary<ServerId, UpstreamConfigVersion>> GetAllLatestAsync(CancellationToken ct);
+
     /// <summary>Entfernt die komplette Historie eines Servers (bei endgültigem Remove).</summary>
     Task RemoveAsync(ServerId id, CancellationToken ct);
 }
@@ -158,6 +161,12 @@ public interface IUpstreamConnection : IAsyncDisposable
     Task<UpstreamInventory> DiscoverAsync(CancellationToken ct);
 
     Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct);
+
+    /// <summary>Liest eine Resource des Upstreams (FR-04); Ergebnis ist das serialisierte ReadResourceResult.</summary>
+    Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct);
+
+    /// <summary>Holt einen Prompt des Upstreams (FR-04); Ergebnis ist das serialisierte GetPromptResult.</summary>
+    Task<JsonElement> GetPromptAsync(string promptName, JsonElement? args, CancellationToken ct);
 
     /// <summary>Health-Probe (MCP ping). Wirft bei totem Upstream.</summary>
     Task PingAsync(CancellationToken ct);
