@@ -1,0 +1,40 @@
+# MCP-MCP Gateway — Standard: SQLite (Zero-Setup, ein Volume).
+# Für PostgreSQL: das 'postgres'-Profil aktivieren (docker compose --profile postgres up).
+
+services:
+  mcpmcp:
+    build: .
+    image: mcpmcp:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - mcpmcp-data:/data
+    environment:
+      # SQLite ist Default; für Postgres die nächsten zwei Zeilen einkommentieren:
+      # MCPMCP_DB_PROVIDER: postgres
+      # MCPMCP_DB_CONNECTION: "Host=db;Database=mcpmcp;Username=mcpmcp;Password=CHANGE_ME"
+      ASPNETCORE_URLS: http://+:8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "dotnet", "McpMcp.Server.dll", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - db
+
+  db:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: mcpmcp
+      POSTGRES_USER: mcpmcp
+      POSTGRES_PASSWORD: CHANGE_ME
+    volumes:
+      - mcpmcp-pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  mcpmcp-data:
+  mcpmcp-pgdata:

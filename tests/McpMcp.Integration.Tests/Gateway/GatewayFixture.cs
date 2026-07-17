@@ -18,6 +18,7 @@ public sealed class GatewayFixture : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
         Directory.CreateDirectory(_dataDir);
+        builder.UseSetting("environment", "Development"); // Cookie SecurePolicy=SameAsRequest → Tests laufen über HTTP
         builder.UseSetting("MCPMCP_DATA_DIR", _dataDir);
         builder.UseSetting("MCPMCP_DB_CONNECTION", $"Data Source={Path.Combine(_dataDir, "e2e.db")}");
     }

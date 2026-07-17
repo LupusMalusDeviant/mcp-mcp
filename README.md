@@ -6,7 +6,7 @@
 
 **A self-hosted meta-MCP gateway on .NET** — connect one endpoint to your agents, and manage all your MCP servers behind it.
 
-> ⚠️ **Active development, approaching v1.** The gateway is functional end-to-end: it aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools, hot-swaps servers without restart, and ships a Blazor admin UI. Remaining before v1.0: hardening, performance proof on reference hardware, EF migration baseline, and a Docker image (WP7).
+> ✅ **v1.0.** The gateway is complete: it aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. Security-audited, Dockerized (chiseled, < 300 MB), 200+ tests green on Windows + Linux (persistence also against real PostgreSQL). See [docs/acceptance/v1.md](docs/acceptance/v1.md).
 
 ## The problem
 
@@ -37,16 +37,36 @@ Web UI ────────┘                    (one pipeline, no bypass) 
 
 Built on the [official C# MCP SDK](https://github.com/modelcontextprotocol/csharp-sdk). Runs as a single Docker container (or bare `dotnet run`), SQLite by default, PostgreSQL optional.
 
-## Getting started (developers)
+## Quickstart (Docker)
+
+```bash
+docker compose up -d
+docker compose logs mcpmcp     # read the bootstrap credentials — shown ONCE, on first start
+```
+
+First start prints an agent **API key** (`mcpk_…`) and a **UI password** for user `admin`. Then:
+
+```bash
+# Web UI: http://localhost:8080  (login: admin + the printed password)
+
+# Connect an agent:
+claude mcp add --transport http mcpmcp http://localhost:8080/mcp \
+  --header "Authorization: Bearer <API-KEY>"
+```
+
+Add upstream MCP servers, roles and profiles from the UI or the REST API — no config files. Always run behind a TLS reverse proxy in production (see [docs/operations.md](docs/operations.md)).
+
+## Building from source (developers)
 
 ```bash
 git clone https://github.com/LupusMalusDeviant/mcp-mcp.git
 cd mcp-mcp
 dotnet build
 dotnet test
+dotnet run --project src/McpMcp.Server   # http://localhost:5000
 ```
 
-Requires the .NET 10 SDK. The integration tests spawn a reference MCP server (`tests/McpMcp.TestServers/EchoServer`) as a real stdio process.
+Requires the .NET 10 SDK. The integration tests spawn reference MCP servers (`tests/McpMcp.TestServers/*`) as real stdio/HTTP processes.
 
 ## Documentation
 
@@ -63,7 +83,7 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M1 "Skeleton talks" | Foundation, upstream connectors, supervisor with crash-restart | ✅ done |
 | M2 "Enforcement stands" | Catalog, RBAC, audit, MCP endpoint, hot-swap | ✅ done |
 | M3 "Both bridges carry" | REST facade, OpenAPI import | ✅ done |
-| M4 "v1.0" | Web UI ✅, hardening, performance proof, Docker release | 🔨 in progress |
+| M4 "v1.0" | Web UI, hardening, security audit, Docker release | ✅ done |
 
 ## License
 

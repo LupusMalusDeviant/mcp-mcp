@@ -13,9 +13,9 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
@@ -30,3 +30,35 @@ jobs:
         with:
           name: coverage-${{ matrix.os }}
           path: coverage
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: docker build -t mcpmcp:ci .
+
+      - name: Verify image size < 300 MB (WP7 DoD)
+        run: |
+          BYTES=$(docker image inspect mcpmcp:ci --format '{{.Size}}')
+          MB=$((BYTES / 1024 / 1024))
+          echo "Image size: ${MB} MB"
+          if [ "$MB" -ge 300 ]; then
+            echo "::error::Image ${MB} MB überschreitet die 300-MB-Grenze (WP7-DoD)."
+            exit 1
+          fi
+
+      - name: Smoke-test container starts and answers /healthz
+        run: |
+          docker run -d --name mcpmcp-ci -p 8080:8080 mcpmcp:ci
+          for i in $(seq 1 30); do
+            if docker exec mcpmcp-ci dotnet McpMcp.Server.dll --healthcheck; then
+              echo "healthy"; docker rm -f mcpmcp-ci; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Container wurde nicht healthy."
+          docker logs mcpmcp-ci
+          docker rm -f mcpmcp-ci
+          exit 1

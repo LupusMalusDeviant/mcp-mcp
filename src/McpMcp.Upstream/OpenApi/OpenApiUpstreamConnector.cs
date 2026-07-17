@@ -32,17 +32,47 @@ public sealed class OpenApiUpstreamConnector : IUpstreamConnector
         return new OpenApiUpstreamConnection(id, operations, http);
     }
 
+    private const long MaxSpecBytes = 10 * 1024 * 1024;
+
     private static async Task<string> LoadSpecAsync(Uri location, CancellationToken ct)
     {
         if (location.IsFile)
         {
+            var info = new FileInfo(location.LocalPath);
+            if (info.Exists && info.Length > MaxSpecBytes)
+            {
+                throw new OpenApiImportException($"Spec-Datei überschreitet {MaxSpecBytes / (1024 * 1024)} MB.");
+            }
+
             return await File.ReadAllTextAsync(location.LocalPath, ct).ConfigureAwait(false);
         }
 
         if (location.Scheme is "http" or "https")
         {
-            using var http = new HttpClient();
-            return await http.GetStringAsync(location, ct).ConfigureAwait(false);
+            // Größenbegrenzung gegen Memory-Exhaustion-DoS über eine riesige Spec (Security-Audit WP7.2).
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            using var response = await http.GetAsync(location, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength is > MaxSpecBytes)
+            {
+                throw new OpenApiImportException($"Spec überschreitet {MaxSpecBytes / (1024 * 1024)} MB.");
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var limited = new StreamReader(stream);
+            var buffer = new char[8192];
+            var sb = new System.Text.StringBuilder();
+            int read;
+            while ((read = await limited.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+            {
+                sb.Append(buffer, 0, read);
+                if (sb.Length > MaxSpecBytes)
+                {
+                    throw new OpenApiImportException($"Spec überschreitet {MaxSpecBytes / (1024 * 1024)} MB.");
+                }
+            }
+
+            return sb.ToString();
         }
 
         throw new OpenApiImportException($"Spec-Quelle '{location}' wird nicht unterstützt (nur file:// und http(s)://).");
@@ -177,6 +207,13 @@ internal sealed class OpenApiUpstreamConnection : IUpstreamConnection
                     query.Add($"{Uri.EscapeDataString(parameter.Name)}={Uri.EscapeDataString(value)}");
                     break;
                 case OpenApiParameterLocation.Header:
+                    // CR/LF aus Aufrufer-Argumenten würde Header-Injection erlauben (Security-Audit WP7.2).
+                    if (value.Contains('\r', StringComparison.Ordinal) || value.Contains('\n', StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            $"Header-Parameter '{parameter.Name}' enthält unzulässige Zeilenumbrüche.");
+                    }
+
                     request.Headers.TryAddWithoutValidation(parameter.Name, value);
                     break;
             }

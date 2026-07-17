@@ -16,6 +16,10 @@ public sealed class UiUserService : IUiUserService
         _time = timeProvider ?? TimeProvider.System;
     }
 
+    // Konstanter Dummy-Hash für den "User nicht gefunden"-Pfad, damit die Antwortzeit nicht verrät,
+    // ob ein Benutzername existiert (Security-Audit WP7.2: Timing-basierte Username-Enumeration).
+    private static readonly string DummyHash = Pbkdf2Hasher.Hash("mcpmcp-dummy-hash-anchor");
+
     public async Task<UiUserInfo?> ValidateCredentialsAsync(string username, string password, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
@@ -27,9 +31,13 @@ public sealed class UiUserService : IUiUserService
         var row = await db.UiUsers.AsNoTracking()
             .SingleOrDefaultAsync(u => u.Username == username, ct).ConfigureAwait(false);
 
-        return row is not null && Pbkdf2Hasher.Verify(password, row.PasswordHash)
-            ? ToInfo(row)
-            : null;
+        if (row is null)
+        {
+            _ = Pbkdf2Hasher.Verify(password, DummyHash); // gleiche Rechenzeit wie ein echter Verify
+            return null;
+        }
+
+        return Pbkdf2Hasher.Verify(password, row.PasswordHash) ? ToInfo(row) : null;
     }
 
     public async Task<UiUserInfo> CreateAsync(string username, string password, UiRole role, CancellationToken ct)

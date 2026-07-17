@@ -3,9 +3,16 @@ using ModelContextProtocol.Client;
 
 namespace McpMcp.Upstream;
 
-/// <summary>Verbindet Remote-MCP-Server über Streamable HTTP (FR-02).</summary>
+/// <summary>Verbindet Remote-MCP-Server über Streamable HTTP (FR-02); markiert ausgehende Calls für die Loop-Erkennung (FR-05).</summary>
 public sealed class StreamableHttpUpstreamConnector : IUpstreamConnector
 {
+    private readonly GatewayIdentity? _gatewayIdentity;
+
+    public StreamableHttpUpstreamConnector(GatewayIdentity? gatewayIdentity = null)
+    {
+        _gatewayIdentity = gatewayIdentity;
+    }
+
     public UpstreamTransportKind Kind => UpstreamTransportKind.StreamableHttp;
 
     public async Task<IUpstreamConnection> ConnectAsync(ServerId id, UpstreamServerConfig config, CancellationToken ct)
@@ -14,11 +21,18 @@ public sealed class StreamableHttpUpstreamConnector : IUpstreamConnector
         var options = config.Http
             ?? throw new ArgumentException($"Config '{config.Slug}' hat keine Http-Optionen.", nameof(config));
 
+        var headers = options.Headers?.ToDictionary(kv => kv.Key, kv => kv.Value)
+            ?? new Dictionary<string, string>();
+        if (_gatewayIdentity is not null)
+        {
+            headers[GatewayIdentity.InstanceHeader] = _gatewayIdentity.InstanceId;
+        }
+
         var transport = new HttpClientTransport(new HttpClientTransportOptions
         {
             Name = config.Slug,
             Endpoint = options.Endpoint,
-            AdditionalHeaders = options.Headers?.ToDictionary(kv => kv.Key, kv => kv.Value),
+            AdditionalHeaders = headers,
         });
 
         var client = await McpClient.CreateAsync(transport, cancellationToken: ct).ConfigureAwait(false);

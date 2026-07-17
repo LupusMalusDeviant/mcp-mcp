@@ -147,6 +147,18 @@ public interface IUpstreamConfigStore
     Task RemoveAsync(ServerId id, CancellationToken ct);
 }
 
+/// <summary>
+/// Eindeutige Kennung dieser Gateway-Instanz (FR-05). Wird bei ausgehenden HTTP-MCP-Verbindungen
+/// als Header <c>X-McpMcp-Instance</c> mitgeschickt; empfängt der eigene MCP-Endpoint die eigene
+/// Kennung, ist das ein direkter Federations-Loop und wird abgewiesen.
+/// </summary>
+public sealed class GatewayIdentity
+{
+    public const string InstanceHeader = "X-McpMcp-Instance";
+
+    public string InstanceId { get; } = Guid.NewGuid().ToString("N");
+}
+
 public sealed record UpstreamTestResult(bool Success, int ToolCount, string? Error);
 
 /// <summary>Testet eine Upstream-Konfiguration transient (Verbindung + Discovery), ohne sie zu registrieren — für "Verbindung testen" in der UI (FR-34).</summary>

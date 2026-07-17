@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.git/
+.git/
+.github/
+docs/
+tests/
+coverage*/
+*.user
+*.log
+data/

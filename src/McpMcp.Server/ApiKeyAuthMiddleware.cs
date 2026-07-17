@@ -15,12 +15,25 @@ public sealed class ApiKeyAuthMiddleware
     public ApiKeyAuthMiddleware(RequestDelegate next) => _next = next;
 
     public async Task InvokeAsync(
-        HttpContext context, IApiKeyValidator validator, IAuditSink audit, TimeProvider time)
+        HttpContext context, IApiKeyValidator validator, IAuditSink audit, TimeProvider time, GatewayIdentity gateway)
     {
         if (!context.Request.Path.StartsWithSegments("/mcp")
             && !context.Request.Path.StartsWithSegments("/api"))
         {
             await _next(context);
+            return;
+        }
+
+        // Federations-Loop (FR-05): trägt der Aufruf unsere eigene Instanz-Kennung, ist der
+        // Gateway (direkt oder über eine Kette) als sein eigener Upstream konfiguriert → abweisen.
+        if (context.Request.Headers.TryGetValue(GatewayIdentity.InstanceHeader, out var instance)
+            && instance == gateway.InstanceId)
+        {
+            context.Response.StatusCode = StatusCodes.Status508LoopDetected;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = "Federations-Loop erkannt: Dieser Gateway ist (direkt oder transitiv) sein eigener Upstream.",
+            });
             return;
         }
 

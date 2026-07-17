@@ -15,6 +15,22 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Protocol;
 
+// Container-Healthcheck (chiseled-Image hat kein curl): als separater Prozess gegen den laufenden Server.
+if (args.Contains("--healthcheck"))
+{
+    try
+    {
+        using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var port = Environment.GetEnvironmentVariable("ASPNETCORE_URLS")?.Split(':').LastOrDefault()?.TrimEnd('/') ?? "8080";
+        var resp = await probe.GetAsync($"http://localhost:{port}/healthz");
+        return resp.IsSuccessStatusCode ? 0 : 1;
+    }
+    catch
+    {
+        return 1;
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Konfiguration (NFR-05: Env-Vars + Volume) ────────────────────────────────
@@ -41,6 +57,7 @@ builder.Services.AddDbContextFactory<McpMcpDbContext>(options =>
 });
 builder.Services.AddSingleton(new PersistenceOptions());
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<GatewayIdentity>();
 
 // ── RBAC (ADR-0006) ──────────────────────────────────────────────────────────
 builder.Services.AddSingleton<InMemoryRbacDirectory>();
@@ -147,6 +164,10 @@ builder.Services
         options.Cookie.Name = "mcpmcp-ui";
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Strict;
+        // Produktion (hinter TLS-Proxy, NFR-04): Cookie nur über HTTPS. Dev/Tests laufen über HTTP.
+        options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest
+            : CookieSecurePolicy.Always;
     });
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy(UiPolicies.Authenticated, p => p.RequireAuthenticatedUser())
@@ -179,16 +200,19 @@ app.MapGet("/readyz", async (IDbContextFactory<McpMcpDbContext> factory, IUpstre
     await using var db = await factory.CreateDbContextAsync(ct);
     var dbOk = await db.Database.CanConnectAsync(ct);
     var statuses = supervisor.Statuses;
+    // Anonymer Endpoint: nur aggregierte Zahlen, keine Slugs/Topologie (Info-Disclosure vermeiden).
     return dbOk
         ? Results.Ok(new
         {
             status = "ready",
-            upstreams = statuses.Select(s => new { s.Slug, state = s.State.ToString(), s.ToolCount }),
+            upstreamsTotal = statuses.Count,
+            upstreamsHealthy = statuses.Count(s => s.State == UpstreamState.Healthy),
         })
         : Results.Json(new { status = "db-unreachable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.Run();
+return 0;
 
 /// <summary>Marker für WebApplicationFactory-basierte Integrationstests.</summary>
 public partial class Program
