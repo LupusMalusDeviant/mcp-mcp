@@ -15,7 +15,6 @@ namespace McpMcp.Persistence;
 public sealed class ApiKeyService : IApiKeyService
 {
     private const string Prefix = "mcpk";
-    private const int Pbkdf2Iterations = 100_000;
     private static readonly TimeSpan ValidationCacheTtl = TimeSpan.FromMinutes(5);
 
     private readonly IDbContextFactory<McpMcpDbContext> _factory;
@@ -127,28 +126,9 @@ public sealed class ApiKeyService : IApiKeyService
         return true;
     }
 
-    private static string HashSecret(string secret)
-    {
-        var salt = RandomNumberGenerator.GetBytes(16);
-        var hash = Rfc2898DeriveBytes.Pbkdf2(
-            Encoding.UTF8.GetBytes(secret), salt, Pbkdf2Iterations, HashAlgorithmName.SHA256, 32);
-        return $"{Pbkdf2Iterations}.{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}";
-    }
+    private static string HashSecret(string secret) => Pbkdf2Hasher.Hash(secret);
 
-    private static bool VerifySecret(string secret, string stored)
-    {
-        var parts = stored.Split('.', 3);
-        if (parts.Length != 3 || !int.TryParse(parts[0], out var iterations))
-        {
-            return false;
-        }
-
-        var salt = Convert.FromBase64String(parts[1]);
-        var expected = Convert.FromBase64String(parts[2]);
-        var actual = Rfc2898DeriveBytes.Pbkdf2(
-            Encoding.UTF8.GetBytes(secret), salt, iterations, HashAlgorithmName.SHA256, expected.Length);
-        return CryptographicOperations.FixedTimeEquals(actual, expected);
-    }
+    private static bool VerifySecret(string secret, string stored) => Pbkdf2Hasher.Verify(secret, stored);
 
     private static string Fingerprint(string presentedKey)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(presentedKey)));

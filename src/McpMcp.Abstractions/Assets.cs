@@ -25,4 +25,7 @@ public interface IAssetStore
     Task<AssetContent> GetAsync(AssetId id, AssetVersion? version, CancellationToken ct);
 
     Task<AssetVersion> PublishAsync(AssetId id, string content, CancellationToken ct);
+
+    /// <summary>Legt ein neues Asset (Name + Beschreibung) als Version 1 an.</summary>
+    Task<AssetId> CreateAsync(string name, string? description, string content, CancellationToken ct);
 }

@@ -1,0 +1,116 @@
+@page "/profiles"
+@attribute [Authorize(Policy = UiPolicies.Admin)]
+@inject IRbacManagement Rbac
+@inject IToolCatalog Catalog
+@inject IAuditSink Audit
+@inject TimeProvider Time
+@inject AuthenticationStateProvider AuthState
+
+<h1>Profile &amp; Token-Cockpit</h1>
+<p class="muted">Pro Profil: welche Tools gepinnt sind und wie viele Kontext-Tokens das kostet (FR-15/38, ADR-0003).</p>
+
+<div class="card">
+    <div class="stat-label">Voll-Exposition aller Tools</div>
+    <div class="stat">@_fullTokens<span class="muted" style="font-size:1rem"> Tokens</span></div>
+    <div class="muted">So viel Kontext kostet ein Agent ohne Profil, der alle @_toolCount Tools voll sähe — die Vergleichsbasis für die ≥ 80 %-Ersparnis (Z-2).</div>
+</div>
+
+<div class="card">
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Profil</th><th>Pinned</th><th>Lazy</th><th>Geschätzte Tokens</th><th>Ersparnis</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var p in _profiles)
+                {
+                    var tokens = EstimateTokens(p);
+                    <tr>
+                        <td class="mono">@p.Name</td>
+                        <td>@p.PinnedTools.Count</td>
+                        <td>@(p.LazyToolsEnabled ? "an" : "aus")</td>
+                        <td>@tokens</td>
+                        <td>@Savings(tokens)</td>
+                        <td><button class="btn-sm btn-danger" @onclick="() => Remove(p.Id)">Löschen</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h3 style="margin-top:0">Neues Profil</h3>
+    <div class="row">
+        <div><label>Name</label><input @bind="_name" /></div>
+        <div style="flex:0; min-width:200px"><label><input type="checkbox" @bind="_lazy" style="width:auto" /> Lazy-Meta-Tools aktiv</label></div>
+    </div>
+    <label>Pinned-Tools (ein Namespaced-Name pro Zeile — voll sichtbar mit Schema)</label>
+    <textarea class="mono" rows="4" @bind="_pinned" placeholder="github__create_issue"></textarea>
+    <p class="muted" style="margin:.4rem 0">Vorschau: @EstimateFromInputs() Tokens</p>
+    <div class="toolbar">
+        <button @onclick="Add">Profil anlegen</button>
+        @if (_msg is not null) { <span class="@(_ok ? "msg-ok" : "msg-err")">@_msg</span> }
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<ToolProfile> _profiles = [];
+    private int _fullTokens, _toolCount;
+    private string _name = "", _pinned = ""; private bool _lazy = true, _ok; private string? _msg;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _profiles = await Rbac.ListProfilesAsync(CancellationToken.None);
+        var tools = Catalog.Snapshot.Where(e => e.Kind == CatalogEntryKind.Tool).ToList();
+        _toolCount = tools.Count;
+        _fullTokens = tools.Sum(t => t.EstimatedSchemaTokens);
+    }
+
+    private int EstimateTokens(ToolProfile p)
+    {
+        var pinnedTokens = p.PinnedTools
+            .Select(n => Catalog.Find(n))
+            .Where(e => e is not null)
+            .Sum(e => e!.EstimatedSchemaTokens);
+        return pinnedTokens + (p.LazyToolsEnabled ? McpMcp.Core.Catalog.ToolCatalog.MetaToolTokenEstimate : 0);
+    }
+
+    private int EstimateFromInputs()
+    {
+        var pinnedTokens = _pinned.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(n => Catalog.Find(new NamespacedToolName(n)))
+            .Where(e => e is not null)
+            .Sum(e => e!.EstimatedSchemaTokens);
+        return pinnedTokens + (_lazy ? McpMcp.Core.Catalog.ToolCatalog.MetaToolTokenEstimate : 0);
+    }
+
+    private string Savings(int tokens)
+        => _fullTokens > 0 ? $"{100.0 * (_fullTokens - tokens) / _fullTokens:0.0}%" : "—";
+
+    private async Task<string> UserAsync()
+        => (await AuthState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "?";
+
+    private async Task Add()
+    {
+        _msg = null;
+        if (string.IsNullOrWhiteSpace(_name)) { _ok = false; _msg = "Name fehlt."; return; }
+        var pins = _pinned.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(n => new NamespacedToolName(n)).ToList();
+        try
+        {
+            await Rbac.UpsertProfileAsync(new ToolProfile(ProfileId.New(), _name.Trim(), pins, _lazy), CancellationToken.None);
+            UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, $"profile-added:{_name}");
+            _ok = true; _msg = "Profil angelegt."; _name = ""; _pinned = "";
+            await Reload();
+        }
+        catch (Exception ex) { _ok = false; _msg = ex.Message; }
+    }
+
+    private async Task Remove(ProfileId id)
+    {
+        await Rbac.RemoveProfileAsync(id, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, "profile-removed");
+        await Reload();
+    }
+}

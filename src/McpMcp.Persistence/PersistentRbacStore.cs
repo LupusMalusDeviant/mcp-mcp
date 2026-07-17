@@ -8,7 +8,7 @@ namespace McpMcp.Persistence;
 /// (Write-Through-Muster — die In-Memory-Sicht bleibt die Hot-Path-Quelle für
 /// AuthorizationService/Katalog, jede Mutation geht erst in die DB, dann ins Directory).
 /// </summary>
-public sealed class PersistentRbacStore
+public sealed class PersistentRbacStore : IRbacManagement
 {
     private readonly IDbContextFactory<McpMcpDbContext> _factory;
     private readonly IMutableRbacDirectory _directory;
@@ -40,6 +40,27 @@ public sealed class PersistentRbacStore
         {
             _directory.UpsertIdentity(ToIdentity(row));
         }
+    }
+
+    public async Task<IReadOnlyList<Identity>> ListIdentitiesAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var rows = await db.Identities.AsNoTracking().OrderBy(r => r.Name).ToListAsync(ct).ConfigureAwait(false);
+        return [.. rows.Select(ToIdentity)];
+    }
+
+    public async Task<IReadOnlyList<Role>> ListRolesAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var rows = await db.Roles.AsNoTracking().OrderBy(r => r.Name).ToListAsync(ct).ConfigureAwait(false);
+        return [.. rows.Select(ToRole)];
+    }
+
+    public async Task<IReadOnlyList<ToolProfile>> ListProfilesAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var rows = await db.Profiles.AsNoTracking().OrderBy(r => r.Name).ToListAsync(ct).ConfigureAwait(false);
+        return [.. rows.Select(ToProfile)];
     }
 
     public async Task UpsertIdentityAsync(Identity identity, CancellationToken ct)

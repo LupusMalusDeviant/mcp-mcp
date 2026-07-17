@@ -1,0 +1,14 @@
+<span class="badge @Css">@State</span>
+
+@code {
+    [Parameter, EditorRequired] public UpstreamState State { get; set; }
+
+    private string Css => State switch
+    {
+        UpstreamState.Healthy => "badge-ok",
+        UpstreamState.Failed => "badge-err",
+        UpstreamState.Degraded => "badge-warn",
+        UpstreamState.Starting => "badge-warn",
+        _ => "badge-muted",
+    };
+}

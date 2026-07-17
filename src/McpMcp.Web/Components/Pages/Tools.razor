@@ -1,0 +1,116 @@
+@page "/tools"
+@attribute [Authorize(Policy = UiPolicies.Authenticated)]
+@inject IToolCatalog Catalog
+@inject IToolInvoker Invoker
+@inject UiInternalIdentity UiIdentity
+
+<h1>Tool-Explorer</h1>
+<p class="muted">Alle aggregierten Tools durchsuchen, Schema ansehen und testweise aufrufen (Origin=Ui, auditiert).</p>
+
+<div class="card">
+    <div class="toolbar">
+        <input @bind="_filter" @bind:event="oninput" placeholder="Filtern nach Name oder Beschreibung …" style="max-width:400px" />
+        <span class="muted">@Filtered().Count() / @_tools.Count Tools</span>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Tool</th><th>Beschreibung</th><th>Tokens</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var t in Filtered())
+                {
+                    <tr>
+                        <td class="mono">@t.Name.Value</td>
+                        <td class="muted" style="max-width:340px">@t.Description</td>
+                        <td>@t.EstimatedSchemaTokens</td>
+                        <td><button class="btn-sm btn-ghost" @onclick="() => Select(t)">Öffnen</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@if (_selected is not null)
+{
+    <div class="card">
+        <h3 style="margin-top:0" class="mono">@_selected.Name.Value</h3>
+        <p class="muted">@_selected.Description</p>
+        <label>Input-Schema</label>
+        <pre>@FormatJson(_selected.InputSchema.GetRawText())</pre>
+
+        <AuthorizeView Policy="@UiPolicies.Operator">
+            <label>Argumente (JSON)</label>
+            <textarea class="mono" rows="4" @bind="_argsJson"></textarea>
+            <div class="toolbar" style="margin-top:.75rem">
+                <button @onclick="Invoke" disabled="@_busy">Testweise aufrufen</button>
+                @if (_status is not null)
+                {
+                    <span class="badge @(_status == InvocationStatus.Success ? "badge-ok" : "badge-err")">@_status</span>
+                }
+            </div>
+            @if (_result is not null)
+            {
+                <label>Ergebnis</label>
+                <pre>@_result</pre>
+            }
+        </AuthorizeView>
+    </div>
+}
+
+@code {
+    private IReadOnlyList<CatalogEntry> _tools = [];
+    private CatalogEntry? _selected;
+    private string _filter = "", _argsJson = "{}";
+    private string? _result;
+    private InvocationStatus? _status;
+    private bool _busy;
+
+    protected override void OnInitialized()
+        => _tools = Catalog.Snapshot.Where(e => e.Kind == CatalogEntryKind.Tool)
+            .OrderBy(e => e.Name.Value, StringComparer.Ordinal).ToList();
+
+    private IEnumerable<CatalogEntry> Filtered()
+        => string.IsNullOrWhiteSpace(_filter)
+            ? _tools
+            : _tools.Where(t =>
+                t.Name.Value.Contains(_filter, StringComparison.OrdinalIgnoreCase) ||
+                t.Description.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+
+    private void Select(CatalogEntry t)
+    {
+        _selected = t; _result = null; _status = null; _argsJson = "{}";
+    }
+
+    private async Task Invoke()
+    {
+        if (_selected is null) return;
+        _busy = true; _result = null; _status = null;
+        try
+        {
+            var args = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(_argsJson);
+            var res = await Invoker.InvokeAsync(
+                new ToolInvocationRequest(UiIdentity.Value, CallOrigin.Ui, _selected.Name, args, null),
+                CancellationToken.None);
+            _status = res.Status;
+            _result = res.Status == InvocationStatus.Success
+                ? FormatJson(res.Content?.GetRawText() ?? "")
+                : res.ErrorMessage;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _status = InvocationStatus.ValidationFailed;
+            _result = "Argumente sind kein gültiges JSON.";
+        }
+        _busy = false;
+    }
+
+    private static string FormatJson(string raw)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw);
+            return System.Text.Json.JsonSerializer.Serialize(doc, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch { return raw; }
+    }
+}

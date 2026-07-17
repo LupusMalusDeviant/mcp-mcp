@@ -276,6 +276,58 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         (await check.AuditEvents.CountAsync()).Should().Be(1);
     }
 
+    [SkippableFact]
+    public async Task UiUsers_create_validate_and_enforce_unique_username()
+    {
+        MarkSkippedIfUnavailable();
+        var service = new UiUserService(Factory);
+        var name = $"betreiber-{Guid.NewGuid():N}";
+
+        (await service.AnyExistAsync(CancellationToken.None)).Should().BeFalse();
+        var created = await service.CreateAsync(name, "geheimes-passwort", UiRole.Operator, CancellationToken.None);
+        created.Role.Should().Be(UiRole.Operator);
+        (await service.AnyExistAsync(CancellationToken.None)).Should().BeTrue();
+
+        (await service.ValidateCredentialsAsync(name, "geheimes-passwort", CancellationToken.None))!.Id
+            .Should().Be(created.Id);
+        (await service.ValidateCredentialsAsync(name, "falsch", CancellationToken.None)).Should().BeNull();
+        (await service.ValidateCredentialsAsync("gibtsnicht", "x", CancellationToken.None)).Should().BeNull();
+
+        // Passwort-Hash liegt nie im Klartext (NFR-04)
+        await using (var db = await Factory.CreateDbContextAsync())
+        {
+            var row = await db.UiUsers.AsNoTracking().SingleAsync(u => u.Username == name);
+            row.PasswordHash.Should().NotContain("geheimes-passwort");
+        }
+
+        var act = () => service.CreateAsync(name, "andere", UiRole.Admin, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*existiert bereits*");
+
+        await service.SetPasswordAsync(created.Id, "neues-passwort", CancellationToken.None);
+        (await service.ValidateCredentialsAsync(name, "neues-passwort", CancellationToken.None)).Should().NotBeNull();
+        (await service.ValidateCredentialsAsync(name, "geheimes-passwort", CancellationToken.None)).Should().BeNull();
+
+        await service.DeleteAsync(created.Id, CancellationToken.None);
+        (await service.ValidateCredentialsAsync(name, "neues-passwort", CancellationToken.None)).Should().BeNull();
+    }
+
+    [SkippableFact]
+    public async Task Assets_version_and_retrieve()
+    {
+        MarkSkippedIfUnavailable();
+        var store = new EfAssetStore(Factory);
+
+        var id = await store.CreateAsync("mein-skill", "Ein Test-Skill", "Version-1-Inhalt", CancellationToken.None);
+        var v2 = await store.PublishAsync(id, "Version-2-Inhalt", CancellationToken.None);
+        v2.Value.Should().Be(2);
+
+        (await store.GetAsync(id, null, CancellationToken.None)).Content.Should().Be("Version-2-Inhalt", "latest");
+        (await store.GetAsync(id, new AssetVersion(1), CancellationToken.None)).Content.Should().Be("Version-1-Inhalt");
+
+        var list = await store.ListAsync(IdentityId.New(), CancellationToken.None);
+        list.Should().ContainSingle(a => a.Id == id).Which.LatestVersion.Value.Should().Be(2);
+    }
+
     private async Task WaitForRowCountAsync(int expected, int timeoutMs = 30000)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();

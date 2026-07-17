@@ -1,0 +1,102 @@
+@page "/assets"
+@attribute [Authorize(Policy = UiPolicies.Admin)]
+@inject IAssetStore AssetStore
+@inject IAuditSink Audit
+@inject TimeProvider Time
+@inject AuthenticationStateProvider AuthState
+
+<h1>Skills / Assets</h1>
+<p class="muted">Zentral verwaltete, versionierte Text-Assets (Skills/Prompts/Instructions, FR-40). Auslieferung an Agenten als MCP-Prompt/Resource folgt.</p>
+
+<div class="card">
+    @if (_assets.Count == 0)
+    {
+        <p class="muted">Noch keine Assets.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Name</th><th>Beschreibung</th><th>Version</th><th>Aktualisiert</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var a in _assets)
+                    {
+                        <tr>
+                            <td>@a.Name</td>
+                            <td class="muted">@(a.Description ?? "—")</td>
+                            <td>v@(a.LatestVersion.Value)</td>
+                            <td class="mono muted">@a.UpdatedAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)</td>
+                            <td><button class="btn-sm btn-ghost" @onclick="() => Edit(a.Id)">Bearbeiten</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<div class="card">
+    <h3 style="margin-top:0">@(_editId is null ? "Neues Asset" : "Neue Version veröffentlichen")</h3>
+    @if (_editId is null)
+    {
+        <div class="row">
+            <div><label>Name</label><input @bind="_name" /></div>
+            <div><label>Beschreibung</label><input @bind="_desc" /></div>
+        </div>
+    }
+    else
+    {
+        <p class="muted">Bearbeite: <span class="mono">@_name</span> — die nächste Version wird angehängt (append-only).</p>
+    }
+    <label>Inhalt</label>
+    <textarea class="mono" rows="8" @bind="_content"></textarea>
+    <div class="toolbar" style="margin-top:.75rem">
+        <button @onclick="Save">@(_editId is null ? "Anlegen" : "Version veröffentlichen")</button>
+        @if (_editId is not null) { <button class="btn-ghost" @onclick="ResetForm">Abbrechen</button> }
+        @if (_msg is not null) { <span class="@(_ok ? "msg-ok" : "msg-err")">@_msg</span> }
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<AssetInfo> _assets = [];
+    private AssetId? _editId;
+    private string _name = "", _desc = "", _content = ""; private bool _ok; private string? _msg;
+
+    protected override Task OnInitializedAsync() => Reload();
+
+    private async Task Reload() => _assets = await AssetStore.ListAsync(default, CancellationToken.None);
+
+    private async Task<string> UserAsync()
+        => (await AuthState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "?";
+
+    private async Task Edit(AssetId id)
+    {
+        var content = await AssetStore.GetAsync(id, null, CancellationToken.None);
+        _editId = id; _name = content.Name; _content = content.Content; _msg = null;
+    }
+
+    private void ResetForm() { _editId = null; _name = _desc = _content = ""; _msg = null; }
+
+    private async Task Save()
+    {
+        _msg = null;
+        try
+        {
+            if (_editId is null)
+            {
+                if (string.IsNullOrWhiteSpace(_name)) { _ok = false; _msg = "Name fehlt."; return; }
+                await AssetStore.CreateAsync(_name.Trim(), string.IsNullOrWhiteSpace(_desc) ? null : _desc.Trim(), _content, CancellationToken.None);
+                UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.AssetChanged, $"asset-created:{_name}");
+            }
+            else
+            {
+                await AssetStore.PublishAsync(_editId.Value, _content, CancellationToken.None);
+                UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.AssetChanged, $"asset-published:{_name}");
+            }
+            _ok = true; _msg = "Gespeichert.";
+            ResetForm();
+            await Reload();
+        }
+        catch (Exception ex) { _ok = false; _msg = ex.Message; }
+    }
+}

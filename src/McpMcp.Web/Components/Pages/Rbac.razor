@@ -1,0 +1,235 @@
+@page "/rbac"
+@attribute [Authorize(Policy = UiPolicies.Admin)]
+@inject IRbacManagement RbacMgmt
+@inject IApiKeyService ApiKeys
+@inject IAuditSink Audit
+@inject TimeProvider Time
+@inject AuthenticationStateProvider AuthState
+
+<h1>RBAC-Verwaltung</h1>
+<p class="muted">Agenten-Identitäten, Rollen mit Grants und API-Keys (FR-27/28/36).</p>
+
+<h2>Rollen</h2>
+<div class="card">
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Name</th><th>Grants</th><th>Rate-Limit</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var r in _roles)
+                {
+                    <tr>
+                        <td class="mono">@r.Name</td>
+                        <td><div class="pill-list">@foreach (var g in r.Grants) { <span class="pill">@GrantLabel(g)</span> }</div></td>
+                        <td>@(r.RateLimit is { } rl ? $"{rl.CallsPerMinute}/min" : "—")</td>
+                        <td><button class="btn-sm btn-danger" @onclick="() => RemoveRole(r.Id)">Löschen</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <h3>Neue Rolle</h3>
+    <div class="row">
+        <div><label>Name</label><input @bind="_roleName" /></div>
+        <div><label>Rate-Limit (Calls/min, leer = unbegrenzt)</label><input type="number" @bind="_roleRate" /></div>
+    </div>
+    <label><input type="checkbox" @bind="_roleGlobal" style="width:auto" /> Global-Grant (alle Tools/Aktionen — Admin-Agent)</label>
+    @if (!_roleGlobal)
+    {
+        <label>Tool-Grants (ein Namespaced-Name pro Zeile, gewährt UseTool)</label>
+        <textarea class="mono" rows="3" @bind="_roleTools" placeholder="github__list_issues"></textarea>
+    }
+    <div class="toolbar" style="margin-top:.75rem">
+        <button @onclick="AddRole">Rolle anlegen</button>
+        @if (_roleMsg is not null) { <span class="@(_roleOk ? "msg-ok" : "msg-err")">@_roleMsg</span> }
+    </div>
+</div>
+
+<h2>Identitäten</h2>
+<div class="card">
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Name</th><th>Rollen</th><th>Profil</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var i in _identities)
+                {
+                    <tr>
+                        <td>@i.Name</td>
+                        <td><div class="pill-list">@foreach (var rid in i.Roles) { <span class="pill">@RoleName(rid)</span> }</div></td>
+                        <td class="muted">@(i.Profile is { } p ? ProfileName(p) : "—")</td>
+                        <td>
+                            <button class="btn-sm btn-ghost" @onclick="() => SelectForKey(i.Id)">Keys</button>
+                            <button class="btn-sm btn-danger" @onclick="() => RemoveIdentity(i.Id)">Löschen</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <h3>Neue Identität</h3>
+    <div class="row">
+        <div><label>Name</label><input @bind="_idName" /></div>
+        <div>
+            <label>Profil (optional)</label>
+            <select @bind="_idProfile">
+                <option value="">(keins — sparsame Default-Sicht)</option>
+                @foreach (var p in _profiles) { <option value="@p.Id.Value">@p.Name</option> }
+            </select>
+        </div>
+    </div>
+    <label>Rollen</label>
+    <div class="pill-list">
+        @foreach (var r in _roles)
+        {
+            <label class="pill"><input type="checkbox" checked="@_idRoles.Contains(r.Id)" @onchange="e => ToggleRole(r.Id, (bool)e.Value!)" style="width:auto" /> @r.Name</label>
+        }
+    </div>
+    <div class="toolbar" style="margin-top:.75rem">
+        <button @onclick="AddIdentity">Identität anlegen</button>
+        @if (_idMsg is not null) { <span class="@(_idOk ? "msg-ok" : "msg-err")">@_idMsg</span> }
+    </div>
+</div>
+
+@if (_keyIdentity is not null)
+{
+    <div class="card">
+        <h3 style="margin-top:0">API-Keys für @IdentityName(_keyIdentity.Value)</h3>
+        @if (_newKey is not null)
+        {
+            <div class="card" style="background:var(--panel2)">
+                <strong class="msg-ok">Neuer Key (wird nie wieder angezeigt):</strong>
+                <pre>@_newKey</pre>
+            </div>
+        }
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Label</th><th>Erstellt</th><th>Läuft ab</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var k in _keys)
+                    {
+                        <tr>
+                            <td>@k.Label</td>
+                            <td class="mono muted">@k.CreatedAt.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)</td>
+                            <td class="mono muted">@(k.ExpiresAt?.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "—")</td>
+                            <td>@(k.RevokedAt is null ? new MarkupString("<span class='badge badge-ok'>aktiv</span>") : new MarkupString("<span class='badge badge-muted'>widerrufen</span>"))</td>
+                            <td>@if (k.RevokedAt is null) { <button class="btn-sm btn-danger" @onclick="() => RevokeKey(k.KeyId)">Widerrufen</button> }</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="row" style="margin-top:.75rem">
+            <div><label>Label</label><input @bind="_keyLabel" placeholder="ci-agent" /></div>
+            <div style="flex:0"><button style="margin-top:1.35rem" @onclick="IssueKey">Key erzeugen</button></div>
+        </div>
+    </div>
+}
+
+@code {
+    private IReadOnlyList<Role> _roles = [];
+    private IReadOnlyList<Identity> _identities = [];
+    private IReadOnlyList<ToolProfile> _profiles = [];
+    private IReadOnlyList<ApiKeyInfo> _keys = [];
+
+    private string _roleName = "", _roleTools = ""; private int? _roleRate; private bool _roleGlobal, _roleOk; private string? _roleMsg;
+    private string _idName = ""; private string _idProfile = ""; private readonly HashSet<RoleId> _idRoles = []; private bool _idOk; private string? _idMsg;
+    private IdentityId? _keyIdentity; private string _keyLabel = ""; private string? _newKey;
+
+    protected override Task OnInitializedAsync() => Reload();
+
+    private async Task Reload()
+    {
+        _roles = await RbacMgmt.ListRolesAsync(CancellationToken.None);
+        _identities = await RbacMgmt.ListIdentitiesAsync(CancellationToken.None);
+        _profiles = await RbacMgmt.ListProfilesAsync(CancellationToken.None);
+    }
+
+    private async Task<string> UserAsync()
+        => (await AuthState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "?";
+
+    private string RoleName(RoleId id) => _roles.FirstOrDefault(r => r.Id == id)?.Name ?? id.ToString()[..8];
+    private string ProfileName(ProfileId id) => _profiles.FirstOrDefault(p => p.Id == id)?.Name ?? id.ToString()[..8];
+    private string IdentityName(IdentityId id) => _identities.FirstOrDefault(i => i.Id == id)?.Name ?? id.ToString()[..8];
+
+    private static string GrantLabel(Grant g)
+        => g.Scope is { Server: null, Tool: null } ? "global"
+            : g.Scope.Tool is { } t ? t.Value
+            : g.Scope.Server is { } s ? $"server:{s.ToString()[..8]}" : "?";
+
+    private void ToggleRole(RoleId id, bool on) { if (on) _idRoles.Add(id); else _idRoles.Remove(id); }
+
+    private async Task AddRole()
+    {
+        _roleMsg = null;
+        if (string.IsNullOrWhiteSpace(_roleName)) { _roleOk = false; _roleMsg = "Name fehlt."; return; }
+        var grants = _roleGlobal
+            ? new List<Grant> { new(new PermissionScope(null, null), [ToolAction.UseTool, ToolAction.ReadResource, ToolAction.UsePrompt]) }
+            : _roleTools.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => new Grant(new PermissionScope(null, new NamespacedToolName(t)), [ToolAction.UseTool])).ToList();
+        try
+        {
+            await RbacMgmt.UpsertRoleAsync(
+                new Role(RoleId.New(), _roleName.Trim(), grants, _roleRate is { } r ? new RateLimit(r) : null),
+                CancellationToken.None);
+            UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, $"role-added:{_roleName}");
+            _roleOk = true; _roleMsg = "Rolle angelegt.";
+            _roleName = _roleTools = ""; _roleRate = null; _roleGlobal = false;
+            await Reload();
+        }
+        catch (Exception ex) { _roleOk = false; _roleMsg = ex.Message; }
+    }
+
+    private async Task RemoveRole(RoleId id)
+    {
+        await RbacMgmt.RemoveRoleAsync(id, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, "role-removed");
+        await Reload();
+    }
+
+    private async Task AddIdentity()
+    {
+        _idMsg = null;
+        if (string.IsNullOrWhiteSpace(_idName)) { _idOk = false; _idMsg = "Name fehlt."; return; }
+        ProfileId? profile = Guid.TryParse(_idProfile, out var pg) ? new ProfileId(pg) : null;
+        try
+        {
+            await RbacMgmt.UpsertIdentityAsync(
+                new Identity(IdentityId.New(), _idName.Trim(), IdentityKind.Agent, [.. _idRoles], profile),
+                CancellationToken.None);
+            UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, $"identity-added:{_idName}");
+            _idOk = true; _idMsg = "Identität angelegt.";
+            _idName = ""; _idProfile = ""; _idRoles.Clear();
+            await Reload();
+        }
+        catch (Exception ex) { _idOk = false; _idMsg = ex.Message; }
+    }
+
+    private async Task RemoveIdentity(IdentityId id)
+    {
+        await RbacMgmt.RemoveIdentityAsync(id, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, "identity-removed");
+        if (_keyIdentity == id) _keyIdentity = null;
+        await Reload();
+    }
+
+    private async Task SelectForKey(IdentityId id)
+    {
+        _keyIdentity = id; _newKey = null;
+        _keys = await ApiKeys.ListAsync(id, CancellationToken.None);
+    }
+
+    private async Task IssueKey()
+    {
+        if (_keyIdentity is null || string.IsNullOrWhiteSpace(_keyLabel)) return;
+        var issued = await ApiKeys.IssueAsync(_keyIdentity.Value, _keyLabel.Trim(), null, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, $"key-issued:{_keyLabel}");
+        _newKey = issued.PlaintextKey; _keyLabel = "";
+        _keys = await ApiKeys.ListAsync(_keyIdentity.Value, CancellationToken.None);
+    }
+
+    private async Task RevokeKey(Guid keyId)
+    {
+        await ApiKeys.RevokeAsync(keyId, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, "key-revoked");
+        if (_keyIdentity is { } id) _keys = await ApiKeys.ListAsync(id, CancellationToken.None);
+    }
+}

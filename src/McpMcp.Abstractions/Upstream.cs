@@ -147,6 +147,14 @@ public interface IUpstreamConfigStore
     Task RemoveAsync(ServerId id, CancellationToken ct);
 }
 
+public sealed record UpstreamTestResult(bool Success, int ToolCount, string? Error);
+
+/// <summary>Testet eine Upstream-Konfiguration transient (Verbindung + Discovery), ohne sie zu registrieren — für "Verbindung testen" in der UI (FR-34).</summary>
+public interface IUpstreamConnectionTester
+{
+    Task<UpstreamTestResult> TestAsync(UpstreamServerConfig config, CancellationToken ct);
+}
+
 /// <summary>Fabrik pro Transporttyp. Implementierungen: Stdio, StreamableHttp, OpenApi (ADR-0005/0008).</summary>
 public interface IUpstreamConnector
 {

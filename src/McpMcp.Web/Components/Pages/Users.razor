@@ -1,0 +1,86 @@
+@page "/users"
+@attribute [Authorize(Policy = UiPolicies.Admin)]
+@inject IUiUserService UserService
+@inject AuthenticationStateProvider AuthState
+
+<h1>UI-Nutzer</h1>
+<p class="muted">Menschliche Betreiber der Web-Oberfläche und ihre Rolle (FR-30). Getrennt vom Agenten-RBAC.</p>
+
+<div class="card">
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Benutzername</th><th>Rolle</th><th>Angelegt</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var u in _users)
+                {
+                    <tr>
+                        <td>@u.Username</td>
+                        <td><span class="badge badge-muted">@u.Role</span></td>
+                        <td class="mono muted">@u.CreatedAt.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)</td>
+                        <td>
+                            @if (u.Username != _me)
+                            {
+                                <button class="btn-sm btn-danger" @onclick="() => Remove(u.Id)">Löschen</button>
+                            }
+                            else { <span class="muted">(du)</span> }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <h3>Neuen Nutzer anlegen</h3>
+    <div class="row">
+        <div><label>Benutzername</label><input @bind="_username" autocomplete="off" /></div>
+        <div><label>Passwort</label><input @bind="_password" type="password" autocomplete="new-password" /></div>
+        <div>
+            <label>Rolle</label>
+            <select @bind="_role">
+                @foreach (var r in Enum.GetValues<UiRole>())
+                {
+                    <option value="@r">@r</option>
+                }
+            </select>
+        </div>
+    </div>
+    <div class="toolbar" style="margin-top:.75rem">
+        <button @onclick="Add">Anlegen</button>
+        @if (_msg is not null) { <span class="@(_ok ? "msg-ok" : "msg-err")">@_msg</span> }
+    </div>
+    <p class="muted">Rollen: <strong>Admin</strong> = alles · <strong>Operator</strong> = Server verwalten &amp; Tools testen · <strong>Auditor</strong> = nur lesen.</p>
+</div>
+
+@code {
+    private IReadOnlyList<UiUserInfo> _users = [];
+    private string _username = "", _password = ""; private UiRole _role = UiRole.Operator; private bool _ok; private string? _msg; private string? _me;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _me = (await AuthState.GetAuthenticationStateAsync()).User.Identity?.Name;
+        await Reload();
+    }
+
+    private async Task Reload() => _users = await UserService.ListAsync(CancellationToken.None);
+
+    private async Task Add()
+    {
+        _msg = null;
+        if (string.IsNullOrWhiteSpace(_username) || string.IsNullOrEmpty(_password))
+        {
+            _ok = false; _msg = "Benutzername und Passwort erforderlich."; return;
+        }
+        try
+        {
+            await UserService.CreateAsync(_username.Trim(), _password, _role, CancellationToken.None);
+            _ok = true; _msg = "Nutzer angelegt."; _username = _password = "";
+            await Reload();
+        }
+        catch (Exception ex) { _ok = false; _msg = ex.Message; }
+    }
+
+    private async Task Remove(Guid id)
+    {
+        await UserService.DeleteAsync(id, CancellationToken.None);
+        await Reload();
+    }
+}

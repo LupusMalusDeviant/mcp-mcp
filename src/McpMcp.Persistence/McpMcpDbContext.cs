@@ -26,6 +26,10 @@ public sealed class McpMcpDbContext : DbContext
 
     public DbSet<AuditEventRow> AuditEvents => Set<AuditEventRow>();
 
+    public DbSet<UiUserRow> UiUsers => Set<UiUserRow>();
+
+    public DbSet<AssetRow> Assets => Set<AssetRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ConfigVersionRow>(e =>
@@ -72,6 +76,21 @@ public sealed class McpMcpDbContext : DbContext
             e.HasIndex(r => r.ServerId);
             e.HasIndex(r => r.Tool);
             e.HasIndex(r => r.Status);
+        });
+
+        modelBuilder.Entity<UiUserRow>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Username).HasMaxLength(200).IsRequired();
+            e.HasIndex(r => r.Username).IsUnique();
+            e.Property(r => r.PasswordHash).HasMaxLength(500).IsRequired();
+        });
+
+        modelBuilder.Entity<AssetRow>(e =>
+        {
+            e.HasKey(r => new { r.Id, r.Version });
+            e.Property(r => r.Name).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Content).IsRequired();
         });
 
         // Provider-neutral: Zeitstempel als UTC-Ticks (bigint). SQLite kann DateTimeOffset weder
@@ -197,4 +216,34 @@ public sealed class AuditEventRow
     public long? ResponseBytes { get; set; }
 
     public double? DurationMs { get; set; }
+}
+
+public sealed class UiUserRow
+{
+    public Guid Id { get; set; }
+
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>PBKDF2-Hash im Format {iterations}.{salt}.{hash} — nie das Klartext-Passwort (NFR-04).</summary>
+    public string PasswordHash { get; set; } = string.Empty;
+
+    public int Role { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>Versioniertes Text-Asset (Skill/Prompt/Instruction, FR-40, WP6.4). Append-only pro Version.</summary>
+public sealed class AssetRow
+{
+    public Guid Id { get; set; }
+
+    public int Version { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+
+    public string Content { get; set; } = string.Empty;
+
+    public DateTimeOffset PublishedAt { get; set; }
 }

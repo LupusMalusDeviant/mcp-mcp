@@ -8,6 +8,9 @@ using McpMcp.Persistence;
 using McpMcp.Persistence.Audit;
 using McpMcp.Server;
 using McpMcp.Upstream;
+using McpMcp.Web;
+using McpMcp.Web.Components;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Protocol;
@@ -46,15 +49,20 @@ builder.Services.AddSingleton<IRbacDirectory>(sp => sp.GetRequiredService<InMemo
 builder.Services.AddSingleton<IAuthorizationService, AuthorizationService>();
 builder.Services.AddSingleton<IRateLimiter, TokenBucketRateLimiter>();
 builder.Services.AddSingleton<PersistentRbacStore>();
+builder.Services.AddSingleton<IRbacManagement>(sp => sp.GetRequiredService<PersistentRbacStore>());
 builder.Services.AddSingleton<ApiKeyService>();
 builder.Services.AddSingleton<IApiKeyService>(sp => sp.GetRequiredService<ApiKeyService>());
 builder.Services.AddSingleton<IApiKeyValidator>(sp => sp.GetRequiredService<ApiKeyService>());
+builder.Services.AddSingleton<IUiUserService, UiUserService>();
+builder.Services.AddSingleton<IAssetStore, EfAssetStore>();
+builder.Services.AddSingleton<McpMcp.Web.UiInternalIdentity>();
 
 // ── Upstreams & Katalog (ADR-0005, WP2) ──────────────────────────────────────
 builder.Services.AddSingleton<IUpstreamConnector, StdioUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConnector, StreamableHttpUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConnector, McpMcp.Upstream.OpenApi.OpenApiUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConfigStore, EfUpstreamConfigStore>();
+builder.Services.AddSingleton<IUpstreamConnectionTester, UpstreamConnectionTester>();
 builder.Services.AddSingleton(new SupervisorOptions());
 builder.Services.AddSingleton<UpstreamSupervisor>(sp => new UpstreamSupervisor(
     sp.GetServices<IUpstreamConnector>(),
@@ -124,6 +132,29 @@ builder.Services.AddMcpServer(options =>
     .WithListPromptsHandler(GatewayMcpHandlers.ListPromptsAsync)
     .WithGetPromptHandler(GatewayMcpHandlers.GetPromptAsync);
 
+// ── Web-UI (WP6, Blazor Interactive Server, ADR-0004) ────────────────────────
+builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddAntiforgery();
+builder.Services
+    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.LoginPath = "/login";
+        options.AccessDeniedPath = "/login";
+        options.ExpireTimeSpan = TimeSpan.FromHours(8);
+        options.SlidingExpiration = true;
+        options.Cookie.Name = "mcpmcp-ui";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+    });
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy(UiPolicies.Authenticated, p => p.RequireAuthenticatedUser())
+    .AddPolicy(UiPolicies.Operator, p => p.RequireClaim(
+        UiPolicies.RoleClaim, nameof(UiRole.Operator), nameof(UiRole.Admin)))
+    .AddPolicy(UiPolicies.Admin, p => p.RequireClaim(
+        UiPolicies.RoleClaim, nameof(UiRole.Admin)));
+
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 builder.Services.AddHostedService<GatewayStartupService>();
 builder.Services.AddHostedService<AuditWriterService>();
@@ -132,9 +163,15 @@ builder.Services.AddHostedService<CatalogNotificationService>();
 
 var app = builder.Build();
 
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseAntiforgery();
+
 app.UseMiddleware<ApiKeyAuthMiddleware>();
 app.MapMcp("/mcp");
 app.MapGatewayApi();
+app.MapAuthEndpoints();
+app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 app.MapGet("/readyz", async (IDbContextFactory<McpMcpDbContext> factory, IUpstreamSupervisor supervisor, CancellationToken ct) =>

@@ -13,9 +13,13 @@ namespace McpMcp.Server;
 /// </summary>
 public sealed partial class GatewayStartupService : IHostedService
 {
+    private const string UiInternalIdentityName = "ui-internal";
+
     private readonly IDbContextFactory<McpMcpDbContext> _factory;
     private readonly PersistentRbacStore _rbacStore;
     private readonly IApiKeyService _apiKeys;
+    private readonly IUiUserService _uiUsers;
+    private readonly McpMcp.Web.UiInternalIdentity _uiInternal;
     private readonly IUpstreamConfigStore _configStore;
     private readonly UpstreamSupervisor _supervisor;
     private readonly ILogger<GatewayStartupService> _logger;
@@ -24,6 +28,8 @@ public sealed partial class GatewayStartupService : IHostedService
         IDbContextFactory<McpMcpDbContext> factory,
         PersistentRbacStore rbacStore,
         IApiKeyService apiKeys,
+        IUiUserService uiUsers,
+        McpMcp.Web.UiInternalIdentity uiInternal,
         IUpstreamConfigStore configStore,
         UpstreamSupervisor supervisor,
         ILogger<GatewayStartupService> logger)
@@ -31,6 +37,8 @@ public sealed partial class GatewayStartupService : IHostedService
         _factory = factory;
         _rbacStore = rbacStore;
         _apiKeys = apiKeys;
+        _uiUsers = uiUsers;
+        _uiInternal = uiInternal;
         _configStore = configStore;
         _supervisor = supervisor;
         _logger = logger;
@@ -45,6 +53,8 @@ public sealed partial class GatewayStartupService : IHostedService
 
         await _rbacStore.LoadAsync(cancellationToken);
         await BootstrapAdminIfEmptyAsync(cancellationToken);
+        await EnsureUiInternalIdentityAsync(cancellationToken);
+        await BootstrapUiAdminIfEmptyAsync(cancellationToken);
 
         var persisted = await _configStore.GetAllLatestAsync(cancellationToken);
         foreach (var (id, version) in persisted)
@@ -84,6 +94,40 @@ public sealed partial class GatewayStartupService : IHostedService
         Log.BootstrapKey(_logger, key.PlaintextKey);
     }
 
+    /// <summary>Sorgt für die Agenten-Identität, unter der UI-Test-Aufrufe laufen (Global-Grant), und cacht ihre Id.</summary>
+    private async Task EnsureUiInternalIdentityAsync(CancellationToken ct)
+    {
+        var existing = (await _rbacStore.ListIdentitiesAsync(ct))
+            .FirstOrDefault(i => i.Name == UiInternalIdentityName);
+        if (existing is not null)
+        {
+            _uiInternal.Value = existing.Id;
+            return;
+        }
+
+        var role = new Role(RoleId.New(), "ui-internal-admin",
+            [new Grant(new PermissionScope(null, null), [ToolAction.UseTool, ToolAction.ReadResource, ToolAction.UsePrompt])]);
+        var identity = new Identity(IdentityId.New(), UiInternalIdentityName, IdentityKind.User, [role.Id]);
+        await _rbacStore.UpsertRoleAsync(role, ct);
+        await _rbacStore.UpsertIdentityAsync(identity, ct);
+        _uiInternal.Value = identity.Id;
+    }
+
+    private async Task BootstrapUiAdminIfEmptyAsync(CancellationToken ct)
+    {
+        if (await _uiUsers.AnyExistAsync(ct))
+        {
+            return;
+        }
+
+        var password = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(18))
+            .Replace('+', 'A').Replace('/', 'B').Replace('=', 'C');
+        await _uiUsers.CreateAsync("admin", password, UiRole.Admin, ct);
+
+        // Wie beim Bootstrap-API-Key: ohne diese einmalige Klartext-Ausgabe käme niemand in die UI.
+        Log.BootstrapUiPassword(_logger, password);
+    }
+
     private static partial class Log
     {
         [LoggerMessage(Level = LogLevel.Information,
@@ -95,8 +139,12 @@ public sealed partial class GatewayStartupService : IHostedService
         public static partial void RestoreFailed(ILogger logger, Exception ex, string slug);
 
         [LoggerMessage(Level = LogLevel.Warning,
-            Message = "ERSTSTART: Bootstrap-Admin angelegt. API-Key (wird NIE wieder angezeigt): {Key}")]
+            Message = "ERSTSTART: Bootstrap-Admin (Agent) angelegt. API-Key (wird NIE wieder angezeigt): {Key}")]
         public static partial void BootstrapKey(ILogger logger, string key);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "ERSTSTART: UI-Admin 'admin' angelegt. Passwort (wird NIE wieder angezeigt): {Password}")]
+        public static partial void BootstrapUiPassword(ILogger logger, string password);
     }
 }
 

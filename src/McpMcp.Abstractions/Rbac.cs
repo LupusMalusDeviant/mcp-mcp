@@ -86,3 +86,29 @@ public interface IRateLimiter
 {
     bool TryAcquire(IdentityId identity);
 }
+
+/// <summary>
+/// Schreibende + lesende RBAC-Verwaltung für UI und REST-Management (FR-36). Persistiert und
+/// hält das Runtime-Directory synchron (Write-Through). Web und Management-API hängen an diesem
+/// Interface, nicht an der konkreten Persistenz-Implementierung (ADR-0004-Layering).
+/// </summary>
+public interface IRbacManagement
+{
+    Task<IReadOnlyList<Identity>> ListIdentitiesAsync(CancellationToken ct);
+
+    Task<IReadOnlyList<Role>> ListRolesAsync(CancellationToken ct);
+
+    Task<IReadOnlyList<ToolProfile>> ListProfilesAsync(CancellationToken ct);
+
+    Task UpsertIdentityAsync(Identity identity, CancellationToken ct);
+
+    Task RemoveIdentityAsync(IdentityId id, CancellationToken ct);
+
+    Task UpsertRoleAsync(Role role, CancellationToken ct);
+
+    Task RemoveRoleAsync(RoleId id, CancellationToken ct);
+
+    Task UpsertProfileAsync(ToolProfile profile, CancellationToken ct);
+
+    Task RemoveProfileAsync(ProfileId id, CancellationToken ct);
+}

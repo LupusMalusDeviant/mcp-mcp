@@ -30,6 +30,36 @@ public sealed class GatewayFixture : WebApplicationFactory<Program>
 
     public IAuditQuery AuditQuery => Services.GetRequiredService<IAuditQuery>();
 
+    public IUiUserService UiUsers => Services.GetRequiredService<IUiUserService>();
+
+    public IToolInvoker Invoker => Services.GetRequiredService<IToolInvoker>();
+
+    /// <summary>HttpClient mit Cookie-Handling, der Redirects NICHT folgt (für Auth-/Authz-Prüfungen).</summary>
+    public HttpClient CreateUiClient() => CreateClient(new WebApplicationFactoryClientOptions
+    {
+        AllowAutoRedirect = false,
+        HandleCookies = true,
+    });
+
+    /// <summary>Meldet einen UI-Nutzer per Form-POST an; der zurückgegebene Client trägt das Auth-Cookie.</summary>
+    public async Task<HttpClient> LoginUiAsync(string username, string password)
+    {
+        var client = CreateUiClient();
+        var response = await client.PostAsync("/auth/login", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["username"] = username,
+            ["password"] = password,
+            ["returnUrl"] = "/",
+        }));
+        if (response.StatusCode != System.Net.HttpStatusCode.Redirect
+            || response.Headers.Location?.OriginalString == "/login?failed=true")
+        {
+            throw new InvalidOperationException($"UI-Login für '{username}' fehlgeschlagen ({response.StatusCode}).");
+        }
+
+        return client;
+    }
+
     /// <summary>Identität + Rolle (+ optionales Profil) anlegen und einen API-Key ausstellen.</summary>
     public async Task<(IdentityId Identity, string ApiKey)> SeedIdentityAsync(
         string name, IReadOnlyList<Grant> grants, ToolProfile? profile = null)

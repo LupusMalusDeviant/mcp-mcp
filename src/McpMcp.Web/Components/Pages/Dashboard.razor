@@ -1,0 +1,94 @@
+@page "/"
+@attribute [Authorize(Policy = UiPolicies.Authenticated)]
+@implements IDisposable
+@inject IUpstreamSupervisor Supervisor
+@inject IToolCatalog Catalog
+@inject IAuditQuery AuditQuery
+
+<h1>Dashboard</h1>
+<p class="muted">Live-Überblick über Gateway, Upstream-Server und Aufkommen.</p>
+
+<div class="grid">
+    <div class="card">
+        <div class="stat-label">Upstream-Server</div>
+        <div class="stat">@_healthy<span class="muted" style="font-size:1rem">/@_total</span></div>
+        <div class="muted">healthy / gesamt</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Aggregierte Tools</div>
+        <div class="stat">@_toolCount</div>
+        <div class="muted">im Katalog</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Calls (letzte 24 h)</div>
+        <div class="stat">@_calls24h</div>
+        <div class="muted">@_denied24h davon verweigert</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Fehlerquote (24 h)</div>
+        <div class="stat">@_errorRate.ToString("0.0", CultureInfo.InvariantCulture)%</div>
+        <div class="muted">Fehler + Timeouts</div>
+    </div>
+</div>
+
+<h2>Server-Status</h2>
+<div class="card">
+    @if (_total == 0)
+    {
+        <p class="muted">Noch keine Upstream-Server. Lege welche unter <a href="/servers">Server</a> an.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Slug</th><th>Status</th><th>Tools</th><th>Letzter Fehler</th></tr></thead>
+                <tbody>
+                    @foreach (var s in _statuses)
+                    {
+                        <tr>
+                            <td class="mono">@s.Slug</td>
+                            <td><StateBadge State="s.State" /></td>
+                            <td>@s.ToolCount</td>
+                            <td class="muted">@(s.LastError ?? "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    private IReadOnlyList<UpstreamStatus> _statuses = [];
+    private int _total, _healthy, _toolCount;
+    private long _calls24h, _denied24h;
+    private double _errorRate;
+    private Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _timer = new Timer(async _ => await InvokeAsync(async () =>
+        {
+            await RefreshAsync();
+            StateHasChanged();
+        }), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+    }
+
+    private async Task RefreshAsync()
+    {
+        _statuses = Supervisor.Statuses;
+        _total = _statuses.Count;
+        _healthy = _statuses.Count(s => s.State == UpstreamState.Healthy);
+        _toolCount = Catalog.Snapshot.Count(e => e.Kind == CatalogEntryKind.Tool);
+
+        var since = DateTimeOffset.UtcNow.AddHours(-24);
+        _calls24h = (await AuditQuery.QueryAsync(new AuditFilter(From: since, Kind: AuditEventKind.ToolCall, PageSize: 1), CancellationToken.None)).TotalCount;
+        _denied24h = (await AuditQuery.QueryAsync(new AuditFilter(From: since, Status: InvocationStatus.Denied, PageSize: 1), CancellationToken.None)).TotalCount;
+        var errors = (await AuditQuery.QueryAsync(new AuditFilter(From: since, Status: InvocationStatus.UpstreamError, PageSize: 1), CancellationToken.None)).TotalCount
+            + (await AuditQuery.QueryAsync(new AuditFilter(From: since, Status: InvocationStatus.Timeout, PageSize: 1), CancellationToken.None)).TotalCount;
+        _errorRate = _calls24h > 0 ? 100.0 * errors / _calls24h : 0;
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

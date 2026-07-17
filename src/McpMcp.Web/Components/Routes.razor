@@ -1,0 +1,28 @@
+@using Microsoft.AspNetCore.Components.Authorization
+
+<CascadingAuthenticationState>
+    <Router AppAssembly="typeof(Routes).Assembly">
+        <Found Context="routeData">
+            <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(MainLayout)">
+                <NotAuthorized>
+                    @if (context.User.Identity?.IsAuthenticated != true)
+                    {
+                        <RedirectToLogin />
+                    }
+                    else
+                    {
+                        <LayoutView Layout="typeof(MainLayout)">
+                            <div class="card">
+                                <h1>Kein Zugriff</h1>
+                                <p class="muted">Deine UI-Rolle reicht für diese Seite nicht aus.</p>
+                            </div>
+                        </LayoutView>
+                    }
+                </NotAuthorized>
+                <Authorizing>
+                    <p class="muted">Prüfe Berechtigung …</p>
+                </Authorizing>
+            </AuthorizeRouteView>
+        </Found>
+    </Router>
+</CascadingAuthenticationState>

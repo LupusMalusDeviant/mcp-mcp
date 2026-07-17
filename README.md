@@ -6,7 +6,7 @@
 
 **A self-hosted meta-MCP gateway on .NET** — connect one endpoint to your agents, and manage all your MCP servers behind it.
 
-> ⚠️ **Early development.** The architecture is fully specified and the foundation (contracts, test infrastructure) is in place, but the gateway itself is under construction. Not usable yet — watch the repo if you're interested.
+> ⚠️ **Active development, approaching v1.** The gateway is functional end-to-end: it aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools, hot-swaps servers without restart, and ships a Blazor admin UI. Remaining before v1.0: hardening, performance proof on reference hardware, EF migration baseline, and a Docker image (WP7).
 
 ## The problem
 
@@ -60,10 +60,10 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M1 "Skeleton talks" | Foundation, upstream connectors, supervisor with crash-restart | 🔨 in progress |
-| M2 "Enforcement stands" | Catalog, RBAC, audit, MCP endpoint, hot-swap | ⬜ |
-| M3 "Both bridges carry" | REST facade, OpenAPI import | ⬜ |
-| M4 "v1.0" | Web UI, hardening, performance proof, Docker release | ⬜ |
+| M1 "Skeleton talks" | Foundation, upstream connectors, supervisor with crash-restart | ✅ done |
+| M2 "Enforcement stands" | Catalog, RBAC, audit, MCP endpoint, hot-swap | ✅ done |
+| M3 "Both bridges carry" | REST facade, OpenAPI import | ✅ done |
+| M4 "v1.0" | Web UI ✅, hardening, performance proof, Docker release | 🔨 in progress |
 
 ## License
 

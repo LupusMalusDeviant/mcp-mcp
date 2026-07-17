@@ -14,7 +14,7 @@ namespace McpMcp.Core.Catalog;
 public sealed partial class ToolCatalog : IToolCatalog, IDisposable
 {
     /// <summary>Konservative Schätzung für die drei Meta-Tool-Schemas (search/describe/invoke, ADR-0003).</summary>
-    internal const int MetaToolTokenEstimate = 700;
+    public const int MetaToolTokenEstimate = 700;
 
     private readonly IUpstreamSupervisor _supervisor;
     private readonly IAuthorizationService _authorization;
