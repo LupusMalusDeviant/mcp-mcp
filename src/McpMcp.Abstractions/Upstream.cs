@@ -81,6 +81,7 @@ public sealed record UpstreamInventory(
 
 public sealed record UpstreamStatus(
     ServerId Id,
+    string Slug,
     UpstreamState State,
     string? LastError,
     int ToolCount,

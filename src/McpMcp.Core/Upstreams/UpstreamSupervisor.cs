@@ -465,7 +465,7 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
         {
             lock (Gate)
             {
-                return new UpstreamStatus(Id, State, LastError, ToolCount, LastHealthyAt);
+                return new UpstreamStatus(Id, Config.Slug, State, LastError, ToolCount, LastHealthyAt);
             }
         }
     }

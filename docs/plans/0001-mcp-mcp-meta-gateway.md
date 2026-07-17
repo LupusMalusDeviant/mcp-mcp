@@ -158,6 +158,7 @@ public interface IAssetStore
 
 **Vertrags-Änderungslog** (gemäß DO Nr. 6):
 - *2026-07-17 (WP1):* `IUpstreamConnector.ConnectAsync` erhält die vom Supervisor vergebene `ServerId` als ersten Parameter (Connector kann sie nicht kennen). `IUpstreamSupervisor` erweitert um `Changed`-Event (`UpstreamChangedEventArgs`: Added/Removed/InventoryChanged/StateChanged) sowie `GetStatus`/`GetInventory`/`GetConnection` — der Katalog (WP2) konsumiert Event + Inventar, das Routing (WP4) die Guarded-Connection. Neuer Persistenz-Port `IUpstreamConfigStore` (+ `UpstreamConfigVersion`) für FR-10; WP1 liefert In-Memory-Stub, WP3 die EF-Implementierung.
+- *2026-07-17 (WP2):* Neues RBAC-Datenmodell in Abstractions (`Rbac.cs`): `Identity`/`Role`/`Grant`/`RateLimit`/`ToolProfile` + IDs (`RoleId`, `ProfileId`), Lese-Port `IRbacDirectory` (mit `Version` + `Changed` für Snapshot-/Katalog-Invalidierung) und `IRateLimiter` (FR-31, konsumiert vom Invoker in WP4). Grant-Semantik: Allow-only (ADR-0006); global (beide Scope-Felder null) / Server-weit / Tool-genau, Tool-Grants binden an den Slug-Namespace. `UpstreamStatus` erweitert um `Slug` (Katalog braucht ihn fürs Namespacing, UI sowieso).
 
 ## 5. Arbeitspakete (Issues)
 
@@ -182,7 +183,7 @@ Jedes WP ist als GitHub-Issue anlegbar (Titel = WP-Titel, Body = Schritte + DoD)
 
 **DoD:** Kill des EchoServer-Prozesses → Status `Failed` → Auto-Restart → `Healthy`, ohne dass ein parallel laufender zweiter Upstream einen Call verliert (Integrationstest CrashServer). `AddAsync` bis `Changed`-Event < 5 s. Kein Zombie-Prozess nach Host-Shutdown (OS-spezifischer Test).
 
-### WP2 — Katalog, Profile & RBAC (L)
+### WP2 — Katalog, Profile & RBAC (L) ✅ *(umgesetzt 2026-07-17; Property-Test handgerollt mit festen Seeds statt FsCheck [keine Zusatz-Dependency]; RBAC-Matrix mit 25 Fällen; AuthorizationService 100 % Branch, ToolCatalog 98 %)*
 
 **Schritte:**
 - WP2.1 (M): `ToolCatalog`: Aggregation, Namespacing (`server__tool`), Kollisionsfreiheit, Token-Schätzung (chars/4), `Changed`-Event.
