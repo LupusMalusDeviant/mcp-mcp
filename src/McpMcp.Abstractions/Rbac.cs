@@ -65,6 +65,22 @@ public interface IRbacDirectory
     ToolProfile? GetProfile(ProfileId id);
 }
 
+/// <summary>Schreibseite des RBAC-Verzeichnisses — konsumiert von Persistenz-Hydration (WP3) und Verwaltung (WP6).</summary>
+public interface IMutableRbacDirectory : IRbacDirectory
+{
+    void UpsertIdentity(Identity identity);
+
+    void RemoveIdentity(IdentityId id);
+
+    void UpsertRole(Role role);
+
+    void RemoveRole(RoleId id);
+
+    void UpsertProfile(ToolProfile profile);
+
+    void RemoveProfile(ProfileId id);
+}
+
 /// <summary>Rate-Limit-Prüfung vor dem Invoker (FR-31). False = ablehnen (wird als Denied auditiert).</summary>
 public interface IRateLimiter
 {

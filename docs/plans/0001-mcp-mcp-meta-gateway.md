@@ -159,6 +159,7 @@ public interface IAssetStore
 **Vertrags-Änderungslog** (gemäß DO Nr. 6):
 - *2026-07-17 (WP1):* `IUpstreamConnector.ConnectAsync` erhält die vom Supervisor vergebene `ServerId` als ersten Parameter (Connector kann sie nicht kennen). `IUpstreamSupervisor` erweitert um `Changed`-Event (`UpstreamChangedEventArgs`: Added/Removed/InventoryChanged/StateChanged) sowie `GetStatus`/`GetInventory`/`GetConnection` — der Katalog (WP2) konsumiert Event + Inventar, das Routing (WP4) die Guarded-Connection. Neuer Persistenz-Port `IUpstreamConfigStore` (+ `UpstreamConfigVersion`) für FR-10; WP1 liefert In-Memory-Stub, WP3 die EF-Implementierung.
 - *2026-07-17 (WP2):* Neues RBAC-Datenmodell in Abstractions (`Rbac.cs`): `Identity`/`Role`/`Grant`/`RateLimit`/`ToolProfile` + IDs (`RoleId`, `ProfileId`), Lese-Port `IRbacDirectory` (mit `Version` + `Changed` für Snapshot-/Katalog-Invalidierung) und `IRateLimiter` (FR-31, konsumiert vom Invoker in WP4). Grant-Semantik: Allow-only (ADR-0006); global (beide Scope-Felder null) / Server-weit / Tool-genau, Tool-Grants binden an den Slug-Namespace. `UpstreamStatus` erweitert um `Slug` (Katalog braucht ihn fürs Namespacing, UI sowieso).
+- *2026-07-17 (WP3):* `IMutableRbacDirectory` (Schreibseite, hält Persistence Core-frei), `IApiKeyService`/`IssuedApiKey`/`ApiKeyInfo` (WP3.3). **Abweichung Migrations:** v1 nutzt `EnsureCreated` statt EF-Migrations — die Zwei-Provider-Migrationspflege (getrennte Migrations-Assemblies) wird erst mit der Migrations-Baseline in WP7 aufgesetzt, solange das Schema noch fließt; NFR-06-Migrationspfad bleibt gewahrt (Baseline vor v1.0). Zeitstempel werden provider-neutral als UTC-Ticks (bigint) gespeichert (SQLite kann DateTimeOffset weder sortieren noch in ExecuteDelete vergleichen). Transitive CVE-Pins in `Directory.Packages.props` (SQLitePCLRaw 2.1.12, GHSA-2m69-gcr7-jv3q). Postgres-Tests skippen ohne erreichbaren Docker (Windows-CI); der Ubuntu-Lauf trägt den Postgres-Nachweis.
 
 ## 5. Arbeitspakete (Issues)
 
@@ -193,7 +194,7 @@ Jedes WP ist als GitHub-Issue anlegbar (Titel = WP-Titel, Body = Schritte + DoD)
 
 **DoD:** RBAC-Testmatrix (≥ 20 Fälle aus PRD-Kriterium 4) 100 % grün; Property-Test „nie sichtbar, was nicht erlaubt" über zufällige Grant-Kombinationen grün; Branch-Coverage der Evaluate/Filter-Pfade = 100 %; Katalog mit 100 Tools liefert `GetViewFor` < 10 ms.
 
-### WP3 — Persistenz & Audit (M)
+### WP3 — Persistenz & Audit (M) ✅ *(umgesetzt 2026-07-17; DoD erfüllt: 1000/1000-Audit-Test, Record p99 < 50 µs, SQLite-Datei-Scan ohne Klartext-Secrets, Provider-Suite SQLite+Postgres [Postgres via Testcontainer, lokal/Windows-CI übersprungen]; Migrations-Abweichung siehe Änderungslog)*
 
 **Schritte:**
 - WP3.1 (M): EF-Core-Modell + Migrations (SQLite & PostgreSQL), Repositories für Config/RBAC/Profile; Data-Protection-Key-Ring + Secret-Verschlüsselung der Upstream-Credentials.

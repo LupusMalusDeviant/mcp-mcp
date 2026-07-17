@@ -1,0 +1,298 @@
+using System.Text;
+using System.Text.Json;
+using FluentAssertions;
+using McpMcp.Abstractions;
+using McpMcp.Core.Audit;
+using McpMcp.Core.Rbac;
+using McpMcp.Persistence;
+using McpMcp.Persistence.Audit;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using Xunit;
+
+namespace McpMcp.Integration.Tests.Persistence;
+
+internal sealed class TestDbContextFactory : IDbContextFactory<McpMcpDbContext>
+{
+    private readonly DbContextOptions<McpMcpDbContext> _options;
+
+    public TestDbContextFactory(DbContextOptions<McpMcpDbContext> options) => _options = options;
+
+    public McpMcpDbContext CreateDbContext() => new(_options);
+}
+
+/// <summary>
+/// Provider-parametrisierte Persistenz-Tests (WP3-DoD): identische Suite läuft gegen
+/// SQLite (Datei) und PostgreSQL (Testcontainer). Subklassen liefern die Optionen.
+/// </summary>
+public abstract class PersistenceTestsBase : IAsyncLifetime
+{
+    private const string Secret = "SUPERSECRET_VALUE_12345";
+
+    internal IDbContextFactory<McpMcpDbContext> Factory { get; private set; } = null!;
+
+    protected IDataProtectionProvider DataProtection { get; } = new EphemeralDataProtectionProvider();
+
+    protected abstract Task<DbContextOptions<McpMcpDbContext>?> CreateOptionsAsync();
+
+    protected abstract void MarkSkippedIfUnavailable();
+
+    public async Task InitializeAsync()
+    {
+        var options = await CreateOptionsAsync();
+        if (options is null)
+        {
+            return; // Provider nicht verfügbar — Tests skippen einzeln
+        }
+
+        Factory = new TestDbContextFactory(options);
+        await using var db = await Factory.CreateDbContextAsync();
+        await db.Database.EnsureCreatedAsync();
+    }
+
+    public virtual Task DisposeAsync() => Task.CompletedTask;
+
+    protected static UpstreamServerConfig ConfigWithSecret(string slug = "srv") => new(
+        slug, $"Server {slug}", UpstreamTransportKind.Stdio, Enabled: true,
+        Stdio: new StdioTransportOptions(
+            "cmd", ["--arg"],
+            new Dictionary<string, string> { ["API_TOKEN"] = Secret }));
+
+    [SkippableFact]
+    public async Task ConfigStore_roundtrips_versions_and_encrypts_payload()
+    {
+        MarkSkippedIfUnavailable();
+        var store = new EfUpstreamConfigStore(Factory, DataProtection);
+        var id = ServerId.New();
+
+        var v1 = await store.AppendVersionAsync(id, ConfigWithSecret("alt"), CancellationToken.None);
+        var v2 = await store.AppendVersionAsync(id, ConfigWithSecret("neu"), CancellationToken.None);
+
+        v1.Value.Should().Be(1);
+        v2.Value.Should().Be(2);
+        (await store.GetVersionAsync(id, v1, CancellationToken.None))!.Slug.Should().Be("alt");
+        (await store.GetVersionAsync(id, v2, CancellationToken.None))!.Stdio!.EnvironmentVariables!["API_TOKEN"]
+            .Should().Be(Secret, "die Entschlüsselung muss verlustfrei sein");
+        (await store.GetHistoryAsync(id, CancellationToken.None)).Select(h => h.Version.Value).Should().Equal(1, 2);
+
+        // NFR-04: der persistierte Blob darf das Secret nicht im Klartext enthalten
+        await using (var db = await Factory.CreateDbContextAsync())
+        {
+            var payloads = await db.ConfigVersions.AsNoTracking().Select(r => r.Payload).ToListAsync();
+            var secretBytes = Encoding.UTF8.GetBytes(Secret);
+            foreach (var payload in payloads)
+            {
+                ContainsSubsequence(payload, secretBytes).Should().BeFalse("Config-Blobs sind verschlüsselt (NFR-04)");
+            }
+        }
+
+        await store.RemoveAsync(id, CancellationToken.None);
+        (await store.GetHistoryAsync(id, CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [SkippableFact]
+    public async Task RbacStore_persists_and_rehydrates_directory()
+    {
+        MarkSkippedIfUnavailable();
+        var writeDirectory = new InMemoryRbacDirectory();
+        var store = new PersistentRbacStore(Factory, writeDirectory);
+
+        var role = new Role(RoleId.New(), "reader",
+            [new Grant(new PermissionScope(ServerId.New(), null), [ToolAction.UseTool, ToolAction.ReadResource])],
+            new RateLimit(42));
+        var profile = new ToolProfile(ProfileId.New(), "profil",
+            [NamespacedToolName.Create("srv", "tool")], LazyToolsEnabled: true);
+        var identity = new Identity(IdentityId.New(), "agent-x", IdentityKind.Agent, [role.Id], profile.Id);
+
+        await store.UpsertRoleAsync(role, CancellationToken.None);
+        await store.UpsertProfileAsync(profile, CancellationToken.None);
+        await store.UpsertIdentityAsync(identity, CancellationToken.None);
+
+        // Frisches Directory aus der DB hydratisieren — muss inhaltsgleich sein
+        var freshDirectory = new InMemoryRbacDirectory();
+        await new PersistentRbacStore(Factory, freshDirectory).LoadAsync(CancellationToken.None);
+
+        freshDirectory.GetRole(role.Id).Should().BeEquivalentTo(role);
+        freshDirectory.GetProfile(profile.Id).Should().BeEquivalentTo(profile);
+        freshDirectory.GetIdentity(identity.Id).Should().BeEquivalentTo(identity);
+
+        await store.RemoveIdentityAsync(identity.Id, CancellationToken.None);
+        await store.RemoveRoleAsync(role.Id, CancellationToken.None);
+        await store.RemoveProfileAsync(profile.Id, CancellationToken.None);
+        var emptied = new InMemoryRbacDirectory();
+        await new PersistentRbacStore(Factory, emptied).LoadAsync(CancellationToken.None);
+        emptied.GetIdentity(identity.Id).Should().BeNull();
+        emptied.GetRole(role.Id).Should().BeNull();
+    }
+
+    [SkippableFact]
+    public async Task ApiKeys_issue_validate_revoke_and_expiry()
+    {
+        MarkSkippedIfUnavailable();
+        var service = new ApiKeyService(Factory);
+        var identity = IdentityId.New();
+
+        var issued = await service.IssueAsync(identity, "test-key", expiresAt: null, CancellationToken.None);
+        issued.PlaintextKey.Should().StartWith("mcpk_");
+
+        (await service.ValidateAsync(issued.PlaintextKey, CancellationToken.None)).Should().Be(identity);
+        (await service.ValidateAsync(issued.PlaintextKey + "x", CancellationToken.None)).Should().BeNull("manipuliertes Secret");
+        (await service.ValidateAsync("mcpk_falschesformat", CancellationToken.None)).Should().BeNull();
+        (await service.ValidateAsync("völlig-falsch", CancellationToken.None)).Should().BeNull();
+
+        // Hash-Speicherung: Klartext-Secret darf nirgends in der Zeile stehen (NFR-04)
+        var secretPart = issued.PlaintextKey.Split('_')[2];
+        await using (var db = await Factory.CreateDbContextAsync())
+        {
+            var row = await db.ApiKeys.AsNoTracking().SingleAsync(r => r.Id == issued.KeyId);
+            row.Hash.Should().NotContain(secretPart);
+        }
+
+        var expired = await service.IssueAsync(identity, "abgelaufen", DateTimeOffset.UtcNow.AddHours(-1), CancellationToken.None);
+        (await service.ValidateAsync(expired.PlaintextKey, CancellationToken.None)).Should().BeNull("Gültigkeitsfenster (FR-31)");
+
+        await service.RevokeAsync(issued.KeyId, CancellationToken.None);
+        (await service.ValidateAsync(issued.PlaintextKey, CancellationToken.None)).Should().BeNull("Widerruf wirkt sofort");
+
+        var list = await service.ListAsync(identity, CancellationToken.None);
+        list.Should().HaveCount(2);
+        list.Single(k => k.KeyId == issued.KeyId).RevokedAt.Should().NotBeNull();
+    }
+
+    [SkippableFact]
+    public async Task Audit_1000_mixed_calls_yield_exactly_1000_attributed_redacted_rows()
+    {
+        MarkSkippedIfUnavailable();
+        var sink = new ChannelAuditSink();
+        var writer = new AuditBatchWriter(sink, Factory, new PersistenceOptions
+        {
+            AuditFlushInterval = TimeSpan.FromMilliseconds(100),
+            AuditMaxBatchSize = 200,
+        });
+        using var cts = new CancellationTokenSource();
+        var run = writer.RunAsync(cts.Token);
+
+        var redaction = new RedactionService();
+        var tool = NamespacedToolName.Create("srv", "login");
+        var identities = new[] { IdentityId.New(), IdentityId.New(), IdentityId.New() };
+        var statuses = new[] { InvocationStatus.Success, InvocationStatus.Denied, InvocationStatus.UpstreamError, InvocationStatus.Timeout };
+        var args = JsonSerializer.SerializeToElement(new { user = "anna", password = "streng-geheim" });
+
+        for (var i = 0; i < 1000; i++)
+        {
+            sink.Record(new AuditEvent(
+                DateTimeOffset.UtcNow,
+                identities[i % identities.Length],
+                CallOrigin.Mcp,
+                AuditEventKind.ToolCall,
+                ServerId.New(),
+                tool.Value,
+                statuses[i % statuses.Length],
+                redaction.RedactArguments(tool, args),
+                RequestBytes: 100,
+                ResponseBytes: 200,
+                Duration: TimeSpan.FromMilliseconds(5)));
+        }
+
+        await WaitForRowCountAsync(1000);
+        cts.Cancel();
+        await run;
+
+        await using var db = await Factory.CreateDbContextAsync();
+        (await db.AuditEvents.CountAsync()).Should().Be(1000, "PRD-Kriterium 5: exakt 1000 Zeilen für 1000 Calls");
+        (await db.AuditEvents.CountAsync(r => r.CallerId == identities[0].Value)).Should().Be(334);
+        (await db.AuditEvents.CountAsync(r => r.Status == (int)InvocationStatus.Denied)).Should().Be(250);
+        sink.DroppedCount.Should().Be(0);
+
+        var anyRow = await db.AuditEvents.AsNoTracking().FirstAsync();
+        anyRow.RedactedArgumentsJson.Should().Contain("anna").And.NotContain("streng-geheim", "Secrets sind maskiert (FR-24)");
+        anyRow.RedactedArgumentsJson.Should().Contain(RedactionService.Mask);
+    }
+
+    [SkippableFact]
+    public async Task AuditQuery_filters_and_pages()
+    {
+        MarkSkippedIfUnavailable();
+        var caller = IdentityId.New();
+        var other = IdentityId.New();
+        var baseTime = DateTimeOffset.UtcNow;
+        await using (var db = await Factory.CreateDbContextAsync())
+        {
+            for (var i = 0; i < 30; i++)
+            {
+                db.AuditEvents.Add(new AuditEventRow
+                {
+                    Timestamp = baseTime.AddMinutes(-i),
+                    CallerId = (i % 2 == 0 ? caller : other).Value,
+                    Origin = (int)CallOrigin.Rest,
+                    Kind = (int)AuditEventKind.ToolCall,
+                    Tool = i < 10 ? "srv__a" : "srv__b",
+                    Status = (int)(i % 3 == 0 ? InvocationStatus.Denied : InvocationStatus.Success),
+                });
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        var query = new EfAuditQuery(Factory);
+
+        var byCaller = await query.QueryAsync(new AuditFilter(Caller: caller), CancellationToken.None);
+        byCaller.TotalCount.Should().Be(15);
+        byCaller.Items.Should().OnlyContain(e => e.Caller == caller);
+
+        var denied = await query.QueryAsync(new AuditFilter(Status: InvocationStatus.Denied), CancellationToken.None);
+        denied.TotalCount.Should().Be(10);
+
+        var byTool = await query.QueryAsync(new AuditFilter(Tool: "srv__a"), CancellationToken.None);
+        byTool.TotalCount.Should().Be(10);
+
+        var page2 = await query.QueryAsync(new AuditFilter(Page: 2, PageSize: 12), CancellationToken.None);
+        page2.Items.Should().HaveCount(12);
+        page2.TotalCount.Should().Be(30);
+
+        var window = await query.QueryAsync(
+            new AuditFilter(From: baseTime.AddMinutes(-9.5), To: baseTime), CancellationToken.None);
+        window.TotalCount.Should().Be(10);
+        window.Items.Should().BeInDescendingOrder(e => e.Timestamp);
+    }
+
+    [SkippableFact]
+    public async Task Retention_removes_only_expired_events()
+    {
+        MarkSkippedIfUnavailable();
+        var options = new PersistenceOptions { AuditRetention = TimeSpan.FromDays(7) };
+        await using (var db = await Factory.CreateDbContextAsync())
+        {
+            db.AuditEvents.Add(new AuditEventRow { Timestamp = DateTimeOffset.UtcNow.AddDays(-30), Kind = 0, Origin = 0 });
+            db.AuditEvents.Add(new AuditEventRow { Timestamp = DateTimeOffset.UtcNow.AddDays(-8), Kind = 0, Origin = 0 });
+            db.AuditEvents.Add(new AuditEventRow { Timestamp = DateTimeOffset.UtcNow.AddDays(-1), Kind = 0, Origin = 0 });
+            await db.SaveChangesAsync();
+        }
+
+        var deleted = await new AuditRetentionJob(Factory, options).ExecuteOnceAsync(CancellationToken.None);
+
+        deleted.Should().Be(2);
+        await using var check = await Factory.CreateDbContextAsync();
+        (await check.AuditEvents.CountAsync()).Should().Be(1);
+    }
+
+    private async Task WaitForRowCountAsync(int expected, int timeoutMs = 30000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            await using var db = await Factory.CreateDbContextAsync();
+            if (await db.AuditEvents.CountAsync() >= expected)
+            {
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException($"Audit-Zeilen erreichten nicht {expected} binnen {timeoutMs} ms.");
+    }
+
+    private static bool ContainsSubsequence(byte[] haystack, byte[] needle)
+        => haystack.AsSpan().IndexOf(needle) >= 0;
+}

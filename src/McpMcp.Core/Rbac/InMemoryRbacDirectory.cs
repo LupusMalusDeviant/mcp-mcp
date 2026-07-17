@@ -8,7 +8,7 @@ namespace McpMcp.Core.Rbac;
 /// Jede Mutation erhöht <see cref="Version"/> und feuert <see cref="Changed"/> —
 /// AuthZ-Snapshot-Cache und Katalog invalidieren darüber (FR-07: PermissionsChanged).
 /// </summary>
-public sealed class InMemoryRbacDirectory : IRbacDirectory
+public sealed class InMemoryRbacDirectory : IMutableRbacDirectory
 {
     private readonly ConcurrentDictionary<IdentityId, Identity> _identities = new();
     private readonly ConcurrentDictionary<RoleId, Role> _roles = new();
