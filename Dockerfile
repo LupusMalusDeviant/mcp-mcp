@@ -18,9 +18,10 @@ COPY src/ src/
 RUN dotnet publish src/McpMcp.Server/McpMcp.Server.csproj \
     -c Release -o /app --no-restore /p:UseAppHost=false
 
-# Leeres Datenverzeichnis mit der UID des chiseled-app-Users vorbereiten (chiseled hat keine Shell,
-# daher kann der Owner nur im Build-Stage gesetzt und dann per COPY --chown übernommen werden).
-RUN mkdir -p /data-template
+# Datenverzeichnis-Vorlage für die Runtime. Die .keep-Datei ist nötig, damit COPY das Zielverzeichnis
+# tatsächlich anlegt — ein leeres Quellverzeichnis würde von COPY übersprungen (Docker-Gotcha), dann
+# erstellte VOLUME das Verzeichnis wieder als root. chiseled hat keine Shell, daher kein RUN chown zur Laufzeit.
+RUN mkdir -p /data-template && touch /data-template/.keep
 
 # ── Runtime (chiseled, non-root, ~110 MB Basis) ──────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS runtime
