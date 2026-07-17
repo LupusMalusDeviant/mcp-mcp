@@ -28,12 +28,13 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 
-# /data gehört dem non-root-User (UID 64198 = "app"): ein darauf gemountetes leeres Volume
-# erbt Owner/Rechte des Image-Verzeichnisses, sodass SQLite-DB + DataProtection-Keys schreibbar sind.
-COPY --from=build --chown=64198:64198 /data-template /data
+# /data muss für den non-root-User schreibbar sein (SQLite-DB + DataProtection-Keys). --chmod=0777
+# ist UID-unabhängig (der genaue chiseled-app-UID variiert), im Single-Tenant-Container unkritisch.
+# Kein VOLUME: so schreibt der Container ohne Mount direkt in das beschreibbare Image-Verzeichnis;
+# ein per docker-compose gemountetes Named Volume erbt dieselben Rechte.
+COPY --from=build --chmod=0777 /data-template /data
 ENV MCPMCP_DATA_DIR=/data \
     ASPNETCORE_URLS=http://+:8080
-VOLUME /data
 EXPOSE 8080
 
 ENTRYPOINT ["dotnet", "McpMcp.Server.dll"]
