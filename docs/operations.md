@@ -81,7 +81,7 @@ Das Audit-Log wächst mit jedem Call. Default-Aufbewahrung: 30 Tage, stündliche
 - `GET /healthz` — Prozess lebt (anonym).
 - `GET /readyz` — DB erreichbar + Upstream-Zustände (anonym).
 
-Der Container-Healthcheck nutzt `dotnet McpMcp.Server.dll --healthcheck` (self-ping, da das chiseled-Image kein `curl` hat).
+Der Container-Healthcheck nutzt `dotnet McpMcp.Server.dll --healthcheck` (self-ping, da das schlanke Runtime-Image kein `curl` enthält). Der Container läuft als non-root `app`-User.
 
 ## Zugang zurücksetzen
 

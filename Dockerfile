@@ -18,23 +18,20 @@ COPY src/ src/
 RUN dotnet publish src/McpMcp.Server/McpMcp.Server.csproj \
     -c Release -o /app --no-restore /p:UseAppHost=false
 
-# Datenverzeichnis-Vorlage für die Runtime. Die .keep-Datei ist nötig, damit COPY das Zielverzeichnis
-# tatsächlich anlegt — ein leeres Quellverzeichnis würde von COPY übersprungen (Docker-Gotcha), dann
-# erstellte VOLUME das Verzeichnis wieder als root. chiseled hat keine Shell, daher kein RUN chown zur Laufzeit.
-RUN mkdir -p /data-template && touch /data-template/.keep
-
-# ── Runtime (chiseled, non-root, ~110 MB Basis) ──────────────────────────────
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS runtime
+# ── Runtime (Ubuntu-noble-Basis mit Shell, non-root; ~230 MB < 300 MB) ───────
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 
-# /data muss für den non-root-User schreibbar sein (SQLite-DB + DataProtection-Keys). --chmod=0777
-# ist UID-unabhängig (der genaue chiseled-app-UID variiert), im Single-Tenant-Container unkritisch.
-# Kein VOLUME: so schreibt der Container ohne Mount direkt in das beschreibbare Image-Verzeichnis;
-# ein per docker-compose gemountetes Named Volume erbt dieselben Rechte.
-COPY --from=build --chmod=0777 /data-template /data
+# Datenverzeichnis (SQLite-DB + DataProtection-Keys) beschreibbar anlegen und dem non-root
+# app-User geben. Chiseled-Images haben keine Shell für RUN chmod — die Ubuntu-Basis schon,
+# was diese Verzeichnisrechte zuverlässig macht.
+RUN mkdir -p /data && chown app:app /data && chmod 0770 /data
+
 ENV MCPMCP_DATA_DIR=/data \
     ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
+USER app
+VOLUME /data
 
 ENTRYPOINT ["dotnet", "McpMcp.Server.dll"]
