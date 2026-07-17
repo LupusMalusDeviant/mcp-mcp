@@ -18,16 +18,21 @@ COPY src/ src/
 RUN dotnet publish src/McpMcp.Server/McpMcp.Server.csproj \
     -c Release -o /app --no-restore /p:UseAppHost=false
 
+# Leeres Datenverzeichnis mit der UID des chiseled-app-Users vorbereiten (chiseled hat keine Shell,
+# daher kann der Owner nur im Build-Stage gesetzt und dann per COPY --chown übernommen werden).
+RUN mkdir -p /data-template
+
 # ── Runtime (chiseled, non-root, ~110 MB Basis) ──────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 
-# Datenverzeichnis (SQLite-DB + DataProtection-Keys) als Volume; gehört dem non-root-User.
+# /data gehört dem non-root-User (UID 64198 = "app"): ein darauf gemountetes leeres Volume
+# erbt Owner/Rechte des Image-Verzeichnisses, sodass SQLite-DB + DataProtection-Keys schreibbar sind.
+COPY --from=build --chown=64198:64198 /data-template /data
 ENV MCPMCP_DATA_DIR=/data \
     ASPNETCORE_URLS=http://+:8080
 VOLUME /data
 EXPOSE 8080
 
-# Das chiseled-Image läuft bereits als non-root (UID 64198, "app").
 ENTRYPOINT ["dotnet", "McpMcp.Server.dll"]
