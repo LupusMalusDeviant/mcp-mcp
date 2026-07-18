@@ -35,6 +35,8 @@ public sealed class SqlitePersistenceTests : PersistenceTestsBase
         // SQLite ist immer verfügbar.
     }
 
+    protected override string InitialCreateMigration => "20260718091957_InitialCreate";
+
     public override Task DisposeAsync()
     {
         SqliteConnection.ClearAllPools();

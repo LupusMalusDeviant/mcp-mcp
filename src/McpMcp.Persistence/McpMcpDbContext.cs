@@ -30,6 +30,8 @@ public sealed class McpMcpDbContext : DbContext
 
     public DbSet<AssetRow> Assets => Set<AssetRow>();
 
+    public DbSet<ToolDescriptionOverrideRow> ToolDescriptionOverrides => Set<ToolDescriptionOverrideRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ConfigVersionRow>(e =>
@@ -91,6 +93,13 @@ public sealed class McpMcpDbContext : DbContext
             e.HasKey(r => new { r.Id, r.Version });
             e.Property(r => r.Name).HasMaxLength(200).IsRequired();
             e.Property(r => r.Content).IsRequired();
+        });
+
+        modelBuilder.Entity<ToolDescriptionOverrideRow>(e =>
+        {
+            e.HasKey(r => r.Tool);
+            e.Property(r => r.Tool).HasMaxLength(300);
+            e.Property(r => r.Description).IsRequired();
         });
 
         // Provider-neutral: Zeitstempel als UTC-Ticks (bigint). SQLite kann DateTimeOffset weder
@@ -230,6 +239,14 @@ public sealed class UiUserRow
     public int Role { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>Serverseitig überschriebene Tool-Beschreibung (FR-14), Schlüssel ist der namespaced Tool-Name.</summary>
+public sealed class ToolDescriptionOverrideRow
+{
+    public string Tool { get; set; } = string.Empty;
+
+    public string Description { get; set; } = string.Empty;
 }
 
 /// <summary>Versioniertes Text-Asset (Skill/Prompt/Instruction, FR-40, WP6.4). Append-only pro Version.</summary>

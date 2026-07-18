@@ -233,6 +233,21 @@ namespace McpMcp.Persistence.Migrations.Postgres.Migrations
                     b.ToTable("Roles");
                 });
 
+            modelBuilder.Entity("McpMcp.Persistence.ToolDescriptionOverrideRow", b =>
+                {
+                    b.Property<string>("Tool")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Tool");
+
+                    b.ToTable("ToolDescriptionOverrides");
+                });
+
             modelBuilder.Entity("McpMcp.Persistence.UiUserRow", b =>
                 {
                     b.Property<Guid>("Id")

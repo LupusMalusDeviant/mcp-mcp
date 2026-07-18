@@ -17,6 +17,12 @@
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.Web" Version="10.0.10" />
 
+    <!-- Metriken-Export (FR-26). OTLP statt Prometheus-Exporter: letzterer ist nicht stabil
+         veröffentlicht; Prometheus-Nutzer scrapen über den OTel-Collector. -->
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+
     <!-- Persistenz (ADR-0007) + Secret-Verschlüsselung (NFR-04) -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10" />

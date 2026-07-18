@@ -15,6 +15,8 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Protocol;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 
 // Container-Healthcheck (chiseled-Image hat kein curl): als separater Prozess gegen den laufenden Server.
 if (args.Contains("--healthcheck"))
@@ -97,10 +99,13 @@ builder.Services.AddSingleton<UpstreamSupervisor>(sp => new UpstreamSupervisor(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<UpstreamSupervisor>>()));
 builder.Services.AddSingleton<IUpstreamSupervisor>(sp => sp.GetRequiredService<UpstreamSupervisor>());
+builder.Services.AddSingleton<ToolDescriptionOverrideStore>();
+builder.Services.AddSingleton<IToolDescriptionOverrides>(sp => sp.GetRequiredService<ToolDescriptionOverrideStore>());
 builder.Services.AddSingleton<ToolCatalog>(sp => new ToolCatalog(
     sp.GetRequiredService<IUpstreamSupervisor>(),
     sp.GetRequiredService<IAuthorizationService>(),
     sp.GetRequiredService<IRbacDirectory>(),
+    sp.GetRequiredService<IToolDescriptionOverrides>(),
     sp.GetRequiredService<ILogger<ToolCatalog>>()));
 builder.Services.AddSingleton<IToolCatalog>(sp => sp.GetRequiredService<ToolCatalog>());
 
@@ -157,6 +162,22 @@ builder.Services.AddMcpServer(options =>
     .WithReadResourceHandler(GatewayMcpHandlers.ReadResourceAsync)
     .WithListPromptsHandler(GatewayMcpHandlers.ListPromptsAsync)
     .WithGetPromptHandler(GatewayMcpHandlers.GetPromptAsync);
+
+// ── Metriken-Export (FR-26) ──────────────────────────────────────────────────
+// Der Invoker misst Calls, Fehler und Latenzen; hier gehen sie nach draußen. Export nur, wenn ein
+// OTLP-Ziel konfiguriert ist — sonst würde der Exporter dauerhaft gegen localhost:4317 laufen und
+// Fehler loggen. Prometheus-Nutzer scrapen den OTel-Collector (eigener Prometheus-Exporter ist
+// nicht stabil veröffentlicht).
+var otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+{
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService("mcp-mcp", serviceVersion: "1.1.0"))
+        .WithMetrics(metrics => metrics
+            .AddMeter(ToolInvoker.MeterName)
+            .AddAspNetCoreInstrumentation()
+            .AddOtlpExporter());
+}
 
 // ── Web-UI (WP6, Blazor Interactive Server, ADR-0004) ────────────────────────
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();

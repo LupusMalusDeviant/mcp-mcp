@@ -2,6 +2,7 @@
 @attribute [Authorize(Policy = UiPolicies.Authenticated)]
 @inject IToolCatalog Catalog
 @inject IToolInvoker Invoker
+@inject IToolDescriptionOverrides Overrides
 @inject UiInternalIdentity UiIdentity
 
 <h1>Tool-Explorer</h1>
@@ -37,6 +38,23 @@
         <p class="muted">@_selected.Description</p>
         <label>Input-Schema</label>
         <pre>@FormatJson(_selected.InputSchema.GetRawText())</pre>
+
+        <AuthorizeView Policy="@UiPolicies.Admin" Context="descAdmin">
+            <label>
+                Beschreibung überschreiben (FR-14) — kürzt Schema-Bloat geschwätziger Upstreams.
+                Leer lassen = Original des Servers verwenden.
+            </label>
+            <textarea rows="2" @bind="_overrideText" placeholder="@_selected.Description"></textarea>
+            <div class="toolbar" style="margin-top:.5rem">
+                <button class="btn-ghost btn-sm" @onclick="SaveOverride">Übernehmen</button>
+                <button class="btn-ghost btn-sm" @onclick="ClearOverride">Zurücksetzen</button>
+                <span class="muted">Geschätzte Tokens aktuell: @_selected.EstimatedSchemaTokens</span>
+                @if (_overrideMessage is not null)
+                {
+                    <span class="msg-ok">@_overrideMessage</span>
+                }
+            </div>
+        </AuthorizeView>
 
         <AuthorizeView Policy="@UiPolicies.Operator">
             <label>Argumente (JSON)</label>
@@ -76,9 +94,37 @@
                 t.Name.Value.Contains(_filter, StringComparison.OrdinalIgnoreCase) ||
                 t.Description.Contains(_filter, StringComparison.OrdinalIgnoreCase));
 
+    private string _overrideText = "";
+    private string? _overrideMessage;
+
     private void Select(CatalogEntry t)
     {
         _selected = t; _result = null; _status = null; _argsJson = "{}";
+        _overrideText = Overrides.GetOverride(t.Name) ?? "";
+        _overrideMessage = null;
+    }
+
+    private async Task SaveOverride()
+    {
+        if (_selected is null) return;
+        await Overrides.SetAsync(_selected.Name, _overrideText, CancellationToken.None);
+        AfterOverrideChange("Übernommen — wirkt auf tools/list, Suche und Token-Schätzung.");
+    }
+
+    private async Task ClearOverride()
+    {
+        if (_selected is null) return;
+        await Overrides.SetAsync(_selected.Name, null, CancellationToken.None);
+        _overrideText = "";
+        AfterOverrideChange("Zurückgesetzt — es gilt wieder die Beschreibung des Servers.");
+    }
+
+    private void AfterOverrideChange(string message)
+    {
+        // Katalog wurde neu gebaut → aktualisierte Einträge holen, damit die Token-Zahl stimmt.
+        OnInitialized();
+        _selected = _selected is null ? null : Catalog.Find(_selected.Name);
+        _overrideMessage = message;
     }
 
     private async Task Invoke()

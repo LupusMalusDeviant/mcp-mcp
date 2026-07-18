@@ -30,6 +30,24 @@ public sealed record ProfileView(
 /// <summary>Kompakter Treffer für <c>search_tools</c> — bewusst ohne volles Schema (Token-Sparen).</summary>
 public sealed record ToolSearchHit(NamespacedToolName Name, string ShortDescription, double Score);
 
+/// <summary>
+/// Serverseitig überschriebene Tool-Beschreibung (FR-14): bändigt Schema-Bloat einzelner Upstreams,
+/// die seitenlange Beschreibungen mitliefern. Wirkt auf <c>tools/list</c>, <c>search_tools</c>,
+/// <c>describe_tool</c> und damit auch auf die Token-Schätzung.
+/// </summary>
+public interface IToolDescriptionOverrides
+{
+    /// <summary>Überschreibung für ein Tool; null = Original des Upstreams verwenden.</summary>
+    string? GetOverride(NamespacedToolName tool);
+
+    IReadOnlyDictionary<NamespacedToolName, string> All { get; }
+
+    Task SetAsync(NamespacedToolName tool, string? description, CancellationToken ct);
+
+    /// <summary>Wird bei jeder Änderung gefeuert — der Katalog baut daraufhin neu und meldet list_changed.</summary>
+    event EventHandler? Changed;
+}
+
 public enum CatalogChangeKind
 {
     ServerAdded = 0,

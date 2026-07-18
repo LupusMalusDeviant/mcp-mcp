@@ -8,6 +8,8 @@ using McpMcp.Persistence;
 using McpMcp.Persistence.Audit;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Xunit;
 
 namespace McpMcp.Integration.Tests.Persistence;
@@ -39,6 +41,9 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
     protected abstract Task<DbContextOptions<McpMcpDbContext>> CreateFreshOptionsAsync(string name);
 
     protected abstract void MarkSkippedIfUnavailable();
+
+    /// <summary>Die v1.0-Baseline des jeweiligen Providers — Ausgangspunkt des Legacy-Upgrade-Tests.</summary>
+    protected abstract string InitialCreateMigration { get; }
 
     public async Task InitializeAsync()
     {
@@ -418,14 +423,15 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
 
         outcome.Should().Be(DatabaseInitOutcome.CreatedFromMigrations);
         await using var db = await factory.CreateDbContextAsync();
-        (await db.Database.GetAppliedMigrationsAsync()).Should().ContainSingle("die InitialCreate-Migration");
+        // Bewusst nicht auf eine feste Anzahl prüfen — jede künftige Schemaänderung bringt eine weitere.
+        (await db.Database.GetAppliedMigrationsAsync()).Should().NotBeEmpty("das Schema kommt aus Migrationen");
         (await db.Database.GetPendingMigrationsAsync()).Should().BeEmpty();
         (await db.Identities.CountAsync()).Should().Be(0, "das Schema ist nutzbar");
     }
 
     /// <summary>
-    /// Der eigentliche v1.1-Upgrade-Nachweis: eine v1.0-Datenbank (per EnsureCreated erzeugt, ohne
-    /// Migrationshistorie) darf beim Start weder scheitern noch Daten verlieren — sie wird gestempelt.
+    /// Der eigentliche v1.1-Upgrade-Nachweis: eine v1.0-Datenbank (Schema ohne Migrationshistorie)
+    /// darf beim Start weder scheitern noch Daten verlieren — sie wird gestempelt und dann migriert.
     /// </summary>
     [SkippableFact]
     public async Task Legacy_v1_database_is_baselined_without_data_loss()
@@ -434,10 +440,15 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         IDbContextFactory<McpMcpDbContext> factory = new TestDbContextFactory(await CreateFreshOptionsAsync("legacy"));
         var identityId = Guid.NewGuid();
 
-        // v1.0-Zustand simulieren: Schema ohne Migrationshistorie + Bestandsdaten.
+        // v1.0-Zustand simulieren: Schema exakt im Stand der InitialCreate-Migration, danach die
+        // Historie entfernen. Bewusst nicht EnsureCreated — das erzeugt das *heutige* Modell und
+        // damit eine Datenbank, die schon Tabellen späterer Migrationen hätte.
         await using (var legacy = await factory.CreateDbContextAsync())
         {
-            await legacy.Database.EnsureCreatedAsync();
+            var script = legacy.GetService<IMigrator>().GenerateScript(toMigration: InitialCreateMigration);
+            await legacy.Database.ExecuteSqlRawAsync(script);
+            await legacy.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"__EFMigrationsHistory\"");
+
             legacy.Identities.Add(new IdentityRow
             {
                 Id = identityId, Name = "bestandsagent", Kind = 0, RolesJson = "[]",
@@ -454,8 +465,9 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             (await upgraded.Identities.SingleAsync()).Name
                 .Should().Be("bestandsagent", "das Upgrade darf keine Bestandsdaten anfassen");
             (await upgraded.Database.GetAppliedMigrationsAsync())
-                .Should().ContainSingle("die Baseline ist als angewendet gestempelt");
-            (await upgraded.Database.GetPendingMigrationsAsync()).Should().BeEmpty();
+                .Should().NotBeEmpty("die Baseline ist als angewendet gestempelt");
+            (await upgraded.Database.GetPendingMigrationsAsync())
+                .Should().BeEmpty("nach dem Stempeln laufen die restlichen Migrationen durch");
         }
 
         // Zweiter Start derselben Instanz: normal migriert, nicht erneut gestempelt.

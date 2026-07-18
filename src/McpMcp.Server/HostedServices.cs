@@ -18,6 +18,7 @@ public sealed partial class GatewayStartupService : IHostedService
     private readonly IDbContextFactory<McpMcpDbContext> _factory;
     private readonly DatabaseInitializer _databaseInitializer;
     private readonly PersistentRbacStore _rbacStore;
+    private readonly ToolDescriptionOverrideStore _descriptionOverrides;
     private readonly IApiKeyService _apiKeys;
     private readonly IUiUserService _uiUsers;
     private readonly McpMcp.Web.UiInternalIdentity _uiInternal;
@@ -29,6 +30,7 @@ public sealed partial class GatewayStartupService : IHostedService
         IDbContextFactory<McpMcpDbContext> factory,
         DatabaseInitializer databaseInitializer,
         PersistentRbacStore rbacStore,
+        ToolDescriptionOverrideStore descriptionOverrides,
         IApiKeyService apiKeys,
         IUiUserService uiUsers,
         McpMcp.Web.UiInternalIdentity uiInternal,
@@ -39,6 +41,7 @@ public sealed partial class GatewayStartupService : IHostedService
         _factory = factory;
         _databaseInitializer = databaseInitializer;
         _rbacStore = rbacStore;
+        _descriptionOverrides = descriptionOverrides;
         _apiKeys = apiKeys;
         _uiUsers = uiUsers;
         _uiInternal = uiInternal;
@@ -53,6 +56,7 @@ public sealed partial class GatewayStartupService : IHostedService
         await _databaseInitializer.InitializeAsync(cancellationToken);
 
         await _rbacStore.LoadAsync(cancellationToken);
+        await _descriptionOverrides.LoadAsync(cancellationToken);
         await BootstrapAdminIfEmptyAsync(cancellationToken);
         await EnsureUiInternalIdentityAsync(cancellationToken);
         await BootstrapUiAdminIfEmptyAsync(cancellationToken);

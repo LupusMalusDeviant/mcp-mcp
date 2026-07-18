@@ -27,7 +27,7 @@ public class MetaToolServiceTests
         result.Status.Should().Be(InvocationStatus.Success);
         var names = result.Content!.Value.GetProperty("tools").EnumerateArray()
             .Select(t => t.GetProperty("name").GetString()).ToList();
-        names.Should().Contain("srv__echo").And.NotContain("srv__free", "Sichtbarkeit folgt Berechtigung (FR-29)");
+        names.Should().Contain(_w.Echo.Value).And.NotContain(_w.Free.Value, "Sichtbarkeit folgt Berechtigung (FR-29)");
         _w.Audit.Events.Should().ContainSingle().Which.Tool.Should().Be("search_tools");
     }
 
@@ -47,9 +47,10 @@ public class MetaToolServiceTests
         var restricted = _w.RegisterAgent(
             new Grant(new PermissionScope(null, _w.Echo), [ToolAction.UseTool]));
 
-        var visible = await ExecuteAsync(restricted, MetaToolService.DescribeToolName, new { name = "srv__echo" });
-        var invisible = await ExecuteAsync(restricted, MetaToolService.DescribeToolName, new { name = "srv__free" });
-        var missing = await ExecuteAsync(restricted, MetaToolService.DescribeToolName, new { name = "srv__nix" });
+        var visible = await ExecuteAsync(restricted, MetaToolService.DescribeToolName, new { name = _w.Echo.Value });
+        var invisible = await ExecuteAsync(restricted, MetaToolService.DescribeToolName, new { name = _w.Free.Value });
+        var missing = await ExecuteAsync(restricted, MetaToolService.DescribeToolName,
+            new { name = NamespacedToolName.Create(_w.Slug, "nix").Value });
 
         visible.Status.Should().Be(InvocationStatus.Success);
         visible.Content!.Value.GetProperty("inputSchema").GetProperty("required")[0].GetString().Should().Be("message");
@@ -65,9 +66,9 @@ public class MetaToolServiceTests
             new Grant(new PermissionScope(null, _w.Echo), [ToolAction.UseTool]));
 
         var allowed = await ExecuteAsync(restricted, MetaToolService.InvokeToolName,
-            new { name = "srv__echo", arguments = new { message = "hi" } });
+            new { name = _w.Echo.Value, arguments = new { message = "hi" } });
         var denied = await ExecuteAsync(restricted, MetaToolService.InvokeToolName,
-            new { name = "srv__free", arguments = new { } });
+            new { name = _w.Free.Value, arguments = new { } });
 
         allowed.Status.Should().Be(InvocationStatus.Success);
         _w.Connection.LastToolName.Should().Be("echo");

@@ -17,7 +17,10 @@ namespace McpMcp.Core.Invocation;
 /// </summary>
 public sealed partial class ToolInvoker : IToolInvoker, IDisposable
 {
-    private static readonly Meter Meter = new("McpMcp.Gateway");
+    /// <summary>Meter-Name für den Metriken-Export (FR-26) — vom Host bei OpenTelemetry registriert.</summary>
+    public const string MeterName = "McpMcp.Gateway";
+
+    private static readonly Meter Meter = new(MeterName);
 
     private readonly IAuthorizationService _authorization;
     private readonly IRateLimiter _rateLimiter;
@@ -100,11 +103,16 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         }
 
         Audit(request, entry, result);
+
+        // FR-26 verlangt Auswertung pro Server UND Tool — der Server-Slug steckt im Namespace.
+        var server = request.Tool.TrySplit(out var slug, out _) ? slug : "unknown";
         _calls.Add(1,
+            new KeyValuePair<string, object?>("server", server),
             new KeyValuePair<string, object?>("tool", request.Tool.Value),
             new KeyValuePair<string, object?>("status", result.Status.ToString()),
             new KeyValuePair<string, object?>("origin", request.Origin.ToString()));
         _duration.Record(result.Duration.TotalMilliseconds,
+            new KeyValuePair<string, object?>("server", server),
             new KeyValuePair<string, object?>("tool", request.Tool.Value),
             new KeyValuePair<string, object?>("status", result.Status.ToString()));
         return result;

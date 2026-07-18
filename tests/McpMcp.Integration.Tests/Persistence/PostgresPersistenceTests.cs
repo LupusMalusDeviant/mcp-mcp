@@ -62,6 +62,8 @@ public sealed class PostgresPersistenceTests : PersistenceTestsBase
     protected override void MarkSkippedIfUnavailable()
         => Skip.If(_unavailableReason is not null, _unavailableReason);
 
+    protected override string InitialCreateMigration => "20260718092006_InitialCreate";
+
     public override async Task DisposeAsync()
     {
         if (_container is not null)

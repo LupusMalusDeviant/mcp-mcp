@@ -27,7 +27,7 @@ public class ToolInvokerTests
         evt.Status.Should().Be(InvocationStatus.Success);
         evt.Caller.Should().Be(admin);
         evt.Server.Should().Be(_w.Server);
-        evt.Tool.Should().Be("srv__echo");
+        evt.Tool.Should().Be(_w.Echo.Value);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class ToolInvokerTests
         var admin = _w.RegisterAdmin();
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, new NamespacedToolName("srv__gibtsnicht")), CancellationToken.None);
+            InvokerTestWorld.Request(admin, NamespacedToolName.Create(_w.Slug, "gibtsnicht")), CancellationToken.None);
 
         result.Status.Should().Be(InvocationStatus.ToolNotFound);
         _w.Audit.Events.Should().ContainSingle().Which.Server.Should().BeNull();

@@ -230,7 +230,7 @@ public class ToolCatalogTests
         _supervisor.SetServer("dead", inventory: null, UpstreamState.Failed);
 
         using var catalog = new McpMcp.Core.Catalog.ToolCatalog(
-            _supervisor, _authorization, _directory,
+            _supervisor, _authorization, _directory, overrides: null,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<McpMcp.Core.Catalog.ToolCatalog>.Instance);
 
         catalog.Snapshot.Should().HaveCount(4, "der Server ohne Inventar liefert keine Einträge");

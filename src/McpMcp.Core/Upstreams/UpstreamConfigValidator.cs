@@ -27,6 +27,13 @@ public static partial class UpstreamConfigValidator
                 nameof(config));
         }
 
+        if (config.Slug.Equals(AssetDelivery.Namespace, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"Slug '{AssetDelivery.Namespace}' ist reserviert für die zentrale Asset-Auslieferung (FR-40).",
+                nameof(config));
+        }
+
         if (string.IsNullOrWhiteSpace(config.DisplayName))
         {
             throw new ArgumentException("DisplayName darf nicht leer sein.", nameof(config));

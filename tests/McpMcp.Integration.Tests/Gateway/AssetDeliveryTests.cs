@@ -1,0 +1,104 @@
+using FluentAssertions;
+using McpMcp.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol.Protocol;
+using Xunit;
+
+namespace McpMcp.Integration.Tests.Gateway;
+
+/// <summary>
+/// FR-40 / Keyfeature 7: zentral gepflegte Assets (Skills, Instructions) müssen bei den Agenten
+/// ankommen — als MCP-Prompt **und** als MCP-Resource. Genau das fehlte, obwohl WP6.4 als erledigt
+/// markiert war; diese Tests halten die Auslieferung jetzt fest.
+/// </summary>
+public sealed class AssetDeliveryTests : IClassFixture<GatewayFixture>
+{
+    private readonly GatewayFixture _gw;
+
+    public AssetDeliveryTests(GatewayFixture gw) => _gw = gw;
+
+    private IAssetStore Assets => _gw.Services.GetRequiredService<IAssetStore>();
+
+    [Fact]
+    public async Task Asset_is_delivered_as_prompt_with_its_content()
+    {
+        var name = $"skill-prompt-{Guid.NewGuid():N}";
+        await Assets.CreateAsync(name, "Ein zentral gepflegter Skill", "## Regeln\nImmer zuerst suchen.", CancellationToken.None);
+        var (_, apiKey) = await _gw.SeedAdminAsync($"asset-prompt-{Guid.NewGuid():N}");
+
+        await using var client = await _gw.ConnectClientAsync(apiKey);
+
+        var prompts = await client.ListPromptsAsync();
+        var expectedName = AssetDelivery.PromptName(name);
+        prompts.Should().Contain(p => p.Name == expectedName,
+            "zentrale Assets erscheinen im Prompt-Verzeichnis des Agenten");
+
+        var prompt = await client.GetPromptAsync(expectedName);
+        prompt.Messages.Should().ContainSingle()
+            .Which.Content.Should().BeOfType<TextContentBlock>()
+            .Which.Text.Should().Be("## Regeln\nImmer zuerst suchen.");
+    }
+
+    [Fact]
+    public async Task Asset_is_readable_as_resource_and_serves_the_latest_version()
+    {
+        var name = $"skill-res-{Guid.NewGuid():N}";
+        var id = await Assets.CreateAsync(name, null, "Version 1", CancellationToken.None);
+        await Assets.PublishAsync(id, "Version 2 — aktualisiert", CancellationToken.None);
+        var (_, apiKey) = await _gw.SeedAdminAsync($"asset-res-{Guid.NewGuid():N}");
+
+        await using var client = await _gw.ConnectClientAsync(apiKey);
+
+        var uri = AssetDelivery.ResourceUri(name);
+        var resources = await client.ListResourcesAsync();
+        resources.Should().Contain(r => r.Uri == uri, "Assets sind auch als Resource adressierbar");
+
+        var read = await client.ReadResourceAsync(uri);
+        read.Contents.OfType<TextResourceContents>().Single().Text
+            .Should().Be("Version 2 — aktualisiert", "ausgeliefert wird immer die neueste Version");
+    }
+
+    [Fact]
+    public async Task Updating_an_asset_changes_what_agents_receive()
+    {
+        var name = $"skill-update-{Guid.NewGuid():N}";
+        var id = await Assets.CreateAsync(name, null, "alter Stand", CancellationToken.None);
+        var (_, apiKey) = await _gw.SeedAdminAsync($"asset-upd-{Guid.NewGuid():N}");
+
+        await using var client = await _gw.ConnectClientAsync(apiKey);
+        var promptName = AssetDelivery.PromptName(name);
+
+        var before = await client.GetPromptAsync(promptName);
+        before.Messages[0].Content.Should().BeOfType<TextContentBlock>().Which.Text.Should().Be("alter Stand");
+
+        // Der Kern von Keyfeature 7: zentral ändern → alle Agenten bekommen den neuen Stand.
+        await Assets.PublishAsync(id, "neuer Stand", CancellationToken.None);
+
+        var after = await client.GetPromptAsync(promptName);
+        after.Messages[0].Content.Should().BeOfType<TextContentBlock>().Which.Text.Should().Be("neuer Stand");
+    }
+
+    [Fact]
+    public async Task Unknown_asset_is_reported_as_missing()
+    {
+        var (_, apiKey) = await _gw.SeedAdminAsync($"asset-missing-{Guid.NewGuid():N}");
+        await using var client = await _gw.ConnectClientAsync(apiKey);
+
+        var act = async () => await client.GetPromptAsync(AssetDelivery.PromptName("gibt-es-nicht"));
+
+        await act.Should().ThrowAsync<Exception>();
+    }
+
+    [Fact]
+    public async Task Assets_slug_is_reserved_for_upstream_servers()
+    {
+        // Sonst könnte ein Upstream mit Slug "assets" die zentrale Auslieferung überschatten.
+        var act = () => _gw.Supervisor.AddAsync(
+            new UpstreamServerConfig(
+                AssetDelivery.Namespace, "Kollision", UpstreamTransportKind.Stdio, Enabled: true,
+                Stdio: new StdioTransportOptions("egal", [])),
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*reserviert*");
+    }
+}

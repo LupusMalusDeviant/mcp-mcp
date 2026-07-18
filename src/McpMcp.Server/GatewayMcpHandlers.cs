@@ -63,7 +63,7 @@ internal static class GatewayMcpHandlers
         return ToCallToolResult(result);
     }
 
-    public static ValueTask<ListResourcesResult> ListResourcesAsync(
+    public static async ValueTask<ListResourcesResult> ListResourcesAsync(
         RequestContext<ListResourcesRequestParams> ctx, CancellationToken ct)
     {
         var identity = RequireIdentity(ctx.Services!);
@@ -93,7 +93,20 @@ internal static class GatewayMcpHandlers
                 }));
         }
 
-        return ValueTask.FromResult(new ListResourcesResult { Resources = resources });
+        // Zentrale Assets (FR-40): zusätzlich zu den Upstream-Resources, unter reserviertem URI-Schema.
+        var assets = ctx.Services!.GetRequiredService<IAssetStore>();
+        foreach (var asset in await assets.ListAsync(identity, ct).ConfigureAwait(false))
+        {
+            resources.Add(new Resource
+            {
+                Uri = AssetDelivery.ResourceUri(asset.Name),
+                Name = AssetDelivery.PromptName(asset.Name),
+                Description = asset.Description ?? $"Zentral verwaltetes Asset (v{asset.LatestVersion.Value}).",
+                MimeType = "text/markdown",
+            });
+        }
+
+        return new ListResourcesResult { Resources = resources };
     }
 
     public static async ValueTask<ReadResourceResult> ReadResourceAsync(
@@ -102,6 +115,16 @@ internal static class GatewayMcpHandlers
         var identity = RequireIdentity(ctx.Services!);
         var uri = ctx.Params?.Uri ?? throw new McpException("resources/read ohne URI.");
         var (_, authorization, supervisor) = ResolveCatalogServices(ctx.Services!);
+
+        // Zentrale Assets (FR-40) vor den Upstreams prüfen — eigener URI-Namespace.
+        if (AssetDelivery.TryGetAssetName(uri) is { } assetResourceName)
+        {
+            var content = await LoadAssetAsync(ctx.Services!, identity, assetResourceName, ct).ConfigureAwait(false);
+            return new ReadResourceResult
+            {
+                Contents = [new TextResourceContents { Uri = uri, MimeType = "text/markdown", Text = content.Content }],
+            };
+        }
 
         foreach (var status in supervisor.Statuses)
         {
@@ -131,7 +154,7 @@ internal static class GatewayMcpHandlers
         throw new McpException($"Resource '{uri}' existiert nicht.");
     }
 
-    public static ValueTask<ListPromptsResult> ListPromptsAsync(
+    public static async ValueTask<ListPromptsResult> ListPromptsAsync(
         RequestContext<ListPromptsRequestParams> ctx, CancellationToken ct)
     {
         var identity = RequireIdentity(ctx.Services!);
@@ -142,7 +165,17 @@ internal static class GatewayMcpHandlers
             .Select(e => new Prompt { Name = e.Name.Value, Description = e.Description })
             .ToList();
 
-        return ValueTask.FromResult(new ListPromptsResult { Prompts = prompts });
+        // Zentrale Assets (FR-40): der eigentliche Zweck von Keyfeature 7 — ein Ort, von dem sich
+        // alle Agenten ihre Skills/Instructions ziehen.
+        var assets = ctx.Services!.GetRequiredService<IAssetStore>();
+        prompts.AddRange((await assets.ListAsync(identity, ct).ConfigureAwait(false))
+            .Select(a => new Prompt
+            {
+                Name = AssetDelivery.PromptName(a.Name),
+                Description = a.Description ?? $"Zentral verwaltetes Asset (v{a.LatestVersion.Value}).",
+            }));
+
+        return new ListPromptsResult { Prompts = prompts };
     }
 
     public static async ValueTask<GetPromptResult> GetPromptAsync(
@@ -151,6 +184,24 @@ internal static class GatewayMcpHandlers
         var identity = RequireIdentity(ctx.Services!);
         var name = ctx.Params?.Name ?? throw new McpException("prompts/get ohne Namen.");
         var (catalog, authorization, supervisor) = ResolveCatalogServices(ctx.Services!);
+
+        // Zentrale Assets (FR-40) vor den Upstreams prüfen — reservierter Namespace.
+        if (AssetDelivery.TryGetAssetName(name) is { } assetPromptName)
+        {
+            var content = await LoadAssetAsync(ctx.Services!, identity, assetPromptName, ct).ConfigureAwait(false);
+            return new GetPromptResult
+            {
+                Description = $"{content.Name} (v{content.Version.Value})",
+                Messages =
+                [
+                    new PromptMessage
+                    {
+                        Role = ModelContextProtocol.Protocol.Role.User,
+                        Content = new TextContentBlock { Text = content.Content },
+                    },
+                ],
+            };
+        }
 
         var namespaced = new NamespacedToolName(name);
         var entry = catalog.Find(namespaced);
@@ -195,6 +246,29 @@ internal static class GatewayMcpHandlers
         {
             Content = [new TextContentBlock { Text = content.GetRawText() }],
         };
+    }
+
+    /// <summary>
+    /// Lädt ein Asset für die Auslieferung und auditiert den Zugriff (FR-40). Assets sind bewusst für
+    /// jede authentifizierte Identität sichtbar — sie sind zentral gepflegte Instruktionstexte, kein
+    /// Zugriff auf fremde Systeme. Eine per-Asset-Berechtigung ist bewusst nicht Teil von FR-40.
+    /// </summary>
+    private static async Task<AssetContent> LoadAssetAsync(
+        IServiceProvider services, IdentityId identity, string assetName, CancellationToken ct)
+    {
+        var assets = services.GetRequiredService<IAssetStore>();
+        var info = (await assets.ListAsync(identity, ct).ConfigureAwait(false))
+            .FirstOrDefault(a => string.Equals(a.Name, assetName, StringComparison.Ordinal));
+
+        if (info is null)
+        {
+            AuditPassthrough(services, identity, null, AssetDelivery.PromptName(assetName), InvocationStatus.ToolNotFound);
+            throw new McpException($"Asset '{assetName}' existiert nicht.");
+        }
+
+        var content = await assets.GetAsync(info.Id, null, ct).ConfigureAwait(false);
+        AuditPassthrough(services, identity, null, AssetDelivery.PromptName(assetName), InvocationStatus.Success);
+        return content;
     }
 
     internal static IdentityId RequireIdentity(IServiceProvider services)

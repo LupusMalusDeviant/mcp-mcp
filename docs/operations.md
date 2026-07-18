@@ -31,6 +31,7 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `ASPNETCORE_URLS` | `http://+:8080` (Container) | Bind-Adresse/Port |
 | `MCPMCP_KEYRING_CERT_PATH` | *(nicht gesetzt)* | PFX-Zertifikat zum Verschlüsseln des Key-Rings (siehe [Key-Ring schützen](#key-ring-schützen)) |
 | `MCPMCP_KEYRING_CERT_PASSWORD` | *(nicht gesetzt)* | Passwort des PFX |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(nicht gesetzt)* | Ziel für den Metriken-Export (siehe [Metriken](#metriken)) |
 
 ## Agent anbinden
 
@@ -99,6 +100,23 @@ Beide **zusammen** sichern (Volume-Snapshot bei gestopptem Container oder DB-Dum
 ## Audit-Retention
 
 Das Audit-Log wächst mit jedem Call. Default-Aufbewahrung: 30 Tage, stündlicher Bereinigungs-Job (FR-25). Bei SQLite ist Retention **Betriebspflicht** (ADR-0007) — sehr große Logs (> ~10 GB) sind ein Grund, auf PostgreSQL zu wechseln.
+
+## Metriken
+
+Der Gateway misst jeden Tool-Call (FR-26) unter dem Meter `McpMcp.Gateway`:
+
+| Instrument | Bedeutung | Dimensionen |
+|---|---|---|
+| `mcpmcp.tool_calls` | Zähler aller Calls — daraus ergeben sich Calls/s und Fehlerquote | `server`, `tool`, `status`, `origin` |
+| `mcpmcp.tool_call_duration` | Latenz-Histogramm (ms) — daraus Perzentile | `server`, `tool`, `status` |
+
+Der Export ist **aus**, solange kein Ziel konfiguriert ist (sonst würde der Exporter dauerhaft ins Leere laufen):
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
+```
+
+Exportiert wird per **OTLP** — der OpenTelemetry-Standard. Für **Prometheus** einen OTel-Collector davorschalten, der OTLP annimmt und einen Scrape-Endpoint anbietet; ein direkter Prometheus-Exporter ist im .NET-Ökosystem noch nicht stabil veröffentlicht, deshalb bewusst dieser Weg.
 
 ## Health / Readiness
 

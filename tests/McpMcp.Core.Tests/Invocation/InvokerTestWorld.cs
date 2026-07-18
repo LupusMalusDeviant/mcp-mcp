@@ -68,10 +68,16 @@ internal sealed class InvokerTestWorld
 
     public FakeUpstreamConnection Connection { get; }
 
+    /// <summary>
+    /// Eigener Server-Slug je Welt: Metriken laufen über einen prozessweiten Meter, parallel laufende
+    /// Tests würden sich sonst gegenseitig ihre Messungen in die Auswertung mischen.
+    /// </summary>
+    public string Slug { get; } = $"srv{Guid.NewGuid():N}"[..12];
+
     public InvokerTestWorld()
     {
         Authorization = new AuthorizationService(Directory);
-        Server = Supervisor.SetServer("srv", new UpstreamInventory(
+        Server = Supervisor.SetServer(Slug, new UpstreamInventory(
             [
                 new ToolDescriptor("echo", "Echoes a message back.", StrictSchema()),
                 new ToolDescriptor("free", "Tool ohne verwertbares Schema.", BrokenSchema()),
@@ -84,9 +90,9 @@ internal sealed class InvokerTestWorld
         MetaTools = new MetaToolService(Catalog, Authorization, Invoker, Audit, Time);
     }
 
-    public NamespacedToolName Echo { get; } = new("srv__echo");
+    public NamespacedToolName Echo => NamespacedToolName.Create(Slug, "echo");
 
-    public NamespacedToolName Free { get; } = new("srv__free");
+    public NamespacedToolName Free => NamespacedToolName.Create(Slug, "free");
 
     public IdentityId RegisterAgent(params Grant[] grants)
     {

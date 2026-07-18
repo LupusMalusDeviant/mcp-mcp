@@ -1,6 +1,7 @@
 @page "/servers"
 @attribute [Authorize(Policy = UiPolicies.Operator)]
 @inject IUpstreamSupervisor Supervisor
+@inject IUpstreamConfigStore ConfigStore
 @inject IUpstreamConnectionTester Tester
 @inject IAuditSink Audit
 @inject TimeProvider Time
@@ -37,6 +38,7 @@
                                 {
                                     <button class="btn-sm btn-ghost" @onclick="() => SetEnabled(s.Id, false)">Deaktivieren</button>
                                 }
+                                <button class="btn-sm btn-ghost" @onclick="() => ShowHistory(s.Id, s.Slug)">Versionen</button>
                                 <button class="btn-sm btn-danger" @onclick="() => Remove(s.Id, s.Slug)">Entfernen</button>
                             </td>
                         </tr>
@@ -46,6 +48,61 @@
         </div>
     }
 </div>
+
+@if (_historyServer is not null)
+{
+    <div class="card">
+        <h3 style="margin-top:0">Konfigurations-Historie: <span class="mono">@_historySlug</span></h3>
+        <p class="muted">
+            Jede Änderung erzeugt eine neue Version (append-only). Ein Rollback stellt eine frühere
+            Konfiguration wieder her und wird selbst als neue Version geführt (FR-10).
+        </p>
+        @if (_history.Count == 0)
+        {
+            <p class="muted">Keine Versionen gefunden.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Version</th><th>Gespeichert (UTC)</th><th>Slug</th><th>Transport</th><th>Aktiv</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var v in _history.OrderByDescending(v => v.Version.Value))
+                        {
+                            <tr>
+                                <td>v@(v.Version.Value)</td>
+                                <td class="mono muted">@v.SavedAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)</td>
+                                <td class="mono">@v.Config.Slug</td>
+                                <td>@v.Config.Kind</td>
+                                <td>@(v.Config.Enabled ? "ja" : "nein")</td>
+                                <td>
+                                    @if (v.Version.Value != _history.Max(x => x.Version.Value))
+                                    {
+                                        <button class="btn-sm btn-ghost" @onclick="() => Rollback(v.Version)">Zurücksetzen</button>
+                                    }
+                                    else
+                                    {
+                                        <span class="muted">aktuell</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <p class="muted" style="margin-bottom:0">
+                Credentials (Env-Variablen, Header, OpenAPI-Secrets) werden hier bewusst nicht angezeigt.
+            </p>
+        }
+        <div class="toolbar" style="margin-top:.75rem">
+            <button class="btn-ghost" @onclick="() => _historyServer = null">Schließen</button>
+            @if (_historyMessage is not null)
+            {
+                <span class="@(_historyOk ? "msg-ok" : "msg-err")">@_historyMessage</span>
+            }
+        </div>
+    </div>
+}
 
 <div class="card">
     <h3 style="margin-top:0">Neuen Server anschließen</h3>
@@ -127,6 +184,12 @@
     private OpenApiAuthKind _openApiAuth = OpenApiAuthKind.None;
     private bool _busy, _ok;
     private string? _message;
+
+    private ServerId? _historyServer;
+    private string _historySlug = "";
+    private IReadOnlyList<UpstreamConfigVersion> _history = [];
+    private string? _historyMessage;
+    private bool _historyOk;
 
     protected override void OnInitialized() => Reload();
 
@@ -224,6 +287,39 @@
         await Supervisor.SetEnabledAsync(id, enabled, CancellationToken.None);
         UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.ConfigChanged, enabled ? "server-enabled" : "server-disabled", id);
         Reload();
+    }
+
+    private async Task ShowHistory(ServerId id, string slug)
+    {
+        _historyServer = id;
+        _historySlug = slug;
+        _historyMessage = null;
+        _history = await ConfigStore.GetHistoryAsync(id, CancellationToken.None);
+    }
+
+    private async Task Rollback(ConfigVersionId version)
+    {
+        if (_historyServer is not { } id)
+        {
+            return;
+        }
+
+        _historyMessage = null;
+        try
+        {
+            await Supervisor.RollbackAsync(id, version, CancellationToken.None);
+            UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.ConfigChanged,
+                $"server-rollback:{_historySlug}:v{version.Value}", id);
+            _historyOk = true;
+            _historyMessage = $"Auf v{version.Value} zurückgesetzt.";
+            _history = await ConfigStore.GetHistoryAsync(id, CancellationToken.None);
+            Reload();
+        }
+        catch (Exception ex)
+        {
+            _historyOk = false;
+            _historyMessage = ex.Message;
+        }
     }
 
     private async Task Remove(ServerId id, string slug)

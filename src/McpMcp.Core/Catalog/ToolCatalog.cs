@@ -19,6 +19,7 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
     private readonly IUpstreamSupervisor _supervisor;
     private readonly IAuthorizationService _authorization;
     private readonly IRbacDirectory _directory;
+    private readonly IToolDescriptionOverrides? _overrides;
     private readonly ILogger<ToolCatalog> _logger;
     private volatile IReadOnlyList<CatalogEntry> _snapshot = [];
     private volatile Dictionary<NamespacedToolName, CatalogEntry> _byName = [];
@@ -27,6 +28,7 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
         IUpstreamSupervisor supervisor,
         IAuthorizationService authorization,
         IRbacDirectory directory,
+        IToolDescriptionOverrides? overrides = null,
         ILogger<ToolCatalog>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(supervisor);
@@ -35,10 +37,16 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
         _supervisor = supervisor;
         _authorization = authorization;
         _directory = directory;
+        _overrides = overrides;
         _logger = logger ?? NullLogger<ToolCatalog>.Instance;
 
         _supervisor.Changed += OnSupervisorChanged;
         _directory.Changed += OnDirectoryChanged;
+        if (_overrides is not null)
+        {
+            _overrides.Changed += OnOverridesChanged;
+        }
+
         Rebuild();
     }
 
@@ -92,6 +100,10 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
     {
         _supervisor.Changed -= OnSupervisorChanged;
         _directory.Changed -= OnDirectoryChanged;
+        if (_overrides is not null)
+        {
+            _overrides.Changed -= OnOverridesChanged;
+        }
     }
 
     internal static int EstimateTokens(string name, string? description, JsonElement schema)
@@ -135,6 +147,12 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
 
     private void OnDirectoryChanged(object? sender, EventArgs e)
         => Raise(CatalogChangeKind.PermissionsChanged, []);
+
+    private void OnOverridesChanged(object? sender, EventArgs e)
+    {
+        Rebuild();
+        Raise(CatalogChangeKind.InventoryChanged, []);
+    }
 
     private static CatalogChangeKind MapKind(UpstreamChangeKind kind) => kind switch
     {
@@ -188,6 +206,14 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
         CatalogEntryKind kind)
     {
         var namespaced = NamespacedToolName.Create(status.Slug, name);
+
+        // FR-14: serverseitige Beschreibung schlägt die des Upstreams — wirkt damit automatisch
+        // auf tools/list, search_tools, describe_tool UND die Token-Schätzung.
+        if (_overrides?.GetOverride(namespaced) is { Length: > 0 } overridden)
+        {
+            description = overridden;
+        }
+
         if (!seen.Add(namespaced))
         {
             // Slug-Eindeutigkeit erzwingt der Supervisor; Duplikate kann nur ein Server liefern,
