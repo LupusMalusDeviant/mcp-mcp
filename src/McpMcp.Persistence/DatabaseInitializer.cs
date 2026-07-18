@@ -50,16 +50,21 @@ public sealed partial class DatabaseInitializer
         var history = db.GetService<IHistoryRepository>();
         var creator = db.GetService<IRelationalDatabaseCreator>();
 
-        // Reihenfolge ist wichtig: Historie und Tabellen dürfen erst abgefragt werden, wenn die
-        // Datenbank überhaupt existiert — sonst wirft/irrt der Provider (Npgsql legt keine DB implizit an).
+        // Erkennungslogik bewusst provider-neutral:
+        //  * Die bloße Existenz der __EFMigrationsHistory taugt NICHT als Kriterium — Npgsql legt sie
+        //    (anders als SQLite) auch ohne angewendete Migration an. Maßgeblich ist, ob tatsächlich
+        //    Migrationen als angewendet eingetragen sind.
+        //  * HasTables() taugt ebenfalls nicht, weil es die Historie-Tabelle selbst mitzählt. Daher
+        //    wird gezielt auf eine unserer Fachtabellen geprüft.
+        // Reihenfolge zählt: erst DB-Existenz, dann Inhalt (Npgsql legt keine Datenbank implizit an).
         var outcome = DatabaseInitOutcome.Migrated;
         if (!await creator.ExistsAsync(ct).ConfigureAwait(false))
         {
             outcome = DatabaseInitOutcome.CreatedFromMigrations;
         }
-        else if (!await history.ExistsAsync(ct).ConfigureAwait(false))
+        else if (!await HasAppliedMigrationsAsync(db, ct).ConfigureAwait(false))
         {
-            if (await creator.HasTablesAsync(ct).ConfigureAwait(false))
+            if (await HasApplicationSchemaAsync(db, ct).ConfigureAwait(false))
             {
                 await StampBaselineAsync(db, history, ct).ConfigureAwait(false);
                 outcome = DatabaseInitOutcome.BaselinedLegacySchema;
@@ -77,9 +82,39 @@ public sealed partial class DatabaseInitializer
         return outcome;
     }
 
+    /// <summary>Gibt es bereits eingetragene (angewendete) Migrationen? Fehlt die Historie-Tabelle, gilt das als "nein".</summary>
+    private static async Task<bool> HasAppliedMigrationsAsync(McpMcpDbContext db, CancellationToken ct)
+    {
+        try
+        {
+            return (await db.Database.GetAppliedMigrationsAsync(ct).ConfigureAwait(false)).Any();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
-    /// Legt die Migrationshistorie an und trägt die Initial-Migration als angewendet ein, ohne ihr DDL
-    /// auszuführen. Die SQL-Skripte stammen aus EF selbst (kein Fremdeingabe-Pfad).
+    /// Steht bereits ein Fach-Schema (also eine unserer Tabellen)? Bewusst über eine echte Abfrage statt
+    /// über <c>HasTables()</c>, weil letzteres die Migrationshistorie mitzählen würde.
+    /// </summary>
+    private static async Task<bool> HasApplicationSchemaAsync(McpMcpDbContext db, CancellationToken ct)
+    {
+        try
+        {
+            await db.Identities.AnyAsync(ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Trägt die Initial-Migration als angewendet ein, ohne ihr DDL auszuführen (Historie-Tabelle wird
+    /// angelegt, falls sie fehlt). Die SQL-Skripte stammen aus EF selbst (kein Fremdeingabe-Pfad).
     /// </summary>
     private async Task StampBaselineAsync(McpMcpDbContext db, IHistoryRepository history, CancellationToken ct)
     {
@@ -91,7 +126,11 @@ public sealed partial class DatabaseInitializer
 
         Log.BaseliningLegacySchema(_logger, baseline);
 #pragma warning disable EF1002 // Skripte kommen aus EF, nicht aus Nutzereingaben
-        await db.Database.ExecuteSqlRawAsync(history.GetCreateScript(), ct).ConfigureAwait(false);
+        if (!await history.ExistsAsync(ct).ConfigureAwait(false))
+        {
+            await db.Database.ExecuteSqlRawAsync(history.GetCreateScript(), ct).ConfigureAwait(false);
+        }
+
         await db.Database
             .ExecuteSqlRawAsync(history.GetInsertScript(new HistoryRow(baseline, productVersion)), ct)
             .ConfigureAwait(false);
