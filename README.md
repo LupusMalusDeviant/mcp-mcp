@@ -6,7 +6,9 @@
 
 **A self-hosted meta-MCP gateway on .NET** — connect one endpoint to your agents, and manage all your MCP servers behind it.
 
-> ✅ **v1.0.** The gateway is complete: it aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. Security-audited, Dockerized (chiseled, < 300 MB), 200+ tests green on Windows + Linux (persistence also against real PostgreSQL). See [docs/acceptance/v1.md](docs/acceptance/v1.md).
+> ✅ **v1.1.** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. Security-audited, Dockerized (< 300 MB, non-root), 200+ tests green on Windows + Linux (persistence also against real PostgreSQL).
+>
+> **New in v1.1:** EF migrations with automatic, step-free upgrade of v1.0 databases · optional X509 encryption of the DataProtection key ring · PBKDF2 raised to 600 k iterations (existing hashes stay valid) · recovery CLI (`--reset-ui-admin`, `--issue-bootstrap-key`) · [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
 
 ## The problem
 
