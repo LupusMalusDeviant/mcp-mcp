@@ -33,6 +33,11 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `MCPMCP_KEYRING_CERT_PASSWORD` | *(nicht gesetzt)* | Passwort des PFX |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(nicht gesetzt)* | Ziel für den Metriken-Export (siehe [Metriken](#metriken)) |
 | `MCPMCP_AUDIT_DEBUG_PAYLOADS` | *(aus)* | `1`/`true` schaltet den Debug-Modus des Audits ein (siehe [Audit-Debug-Modus](#audit-debug-modus)) |
+| `MCPMCP_AUDIT_RETENTION_DAYS` | `30` | Aufbewahrung der Audit-Ereignisse in Tagen; ältere werden täglich gelöscht (FR-25) |
+
+Logs werden außerhalb von `Development` als **JSON** auf stdout geschrieben (NFR-07), damit
+Container-Logs ohne Zusatzkonfiguration von einem Aggregator geparst werden können. Lokal bleibt
+es beim lesbaren Textformat.
 
 ## Audit-Debug-Modus
 

@@ -10,6 +10,7 @@ using McpMcp.Server;
 using McpMcp.Upstream;
 using McpMcp.Web;
 using McpMcp.Web.Components;
+using System.Globalization;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
@@ -35,6 +36,21 @@ if (args.Contains("--healthcheck"))
 }
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ── Logging (NFR-07: strukturierte Logs) ─────────────────────────────────────
+// JSON ist der Default, damit Container-Logs ohne Zusatzkonfiguration von jedem
+// Log-Aggregator geparst werden können. Für die lokale Entwicklung ist der lesbare
+// Textformatter angenehmer — dort bleibt es beim Default von CreateBuilder.
+if (!builder.Environment.IsDevelopment())
+{
+    builder.Logging.ClearProviders();
+    builder.Logging.AddJsonConsole(o =>
+    {
+        o.IncludeScopes = true;
+        o.TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
+        o.UseUtcTimestamp = true;
+    });
+}
 
 // ── Konfiguration (NFR-05: Env-Vars + Volume) ────────────────────────────────
 var dataDir = builder.Configuration["MCPMCP_DATA_DIR"] ?? "data";
@@ -66,7 +82,14 @@ if (!string.IsNullOrWhiteSpace(keyCertPath))
 builder.Services.AddDbContextFactory<McpMcpDbContext>(options =>
     options.UseMcpMcpDatabase(dbProvider, connectionString));
 builder.Services.AddSingleton<DatabaseInitializer>();
-builder.Services.AddSingleton(new PersistenceOptions());
+// FR-25: Aufbewahrungsdauer ist Betriebsentscheidung (Plattenbedarf vs. Nachvollziehbarkeit),
+// darf also nicht im Code festgenagelt sein. Ungültige/fehlende Angabe fällt auf den Default zurück.
+var retentionDays = int.TryParse(
+    Environment.GetEnvironmentVariable("MCPMCP_AUDIT_RETENTION_DAYS"),
+    NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDays) && parsedDays > 0
+    ? parsedDays
+    : 30;
+builder.Services.AddSingleton(new PersistenceOptions { AuditRetention = TimeSpan.FromDays(retentionDays) });
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<GatewayIdentity>();
 

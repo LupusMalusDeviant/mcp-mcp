@@ -76,6 +76,13 @@
                         <td>@StatusBadge(e.Status)</td>
                         <td class="muted">@(e.Duration is { } d ? $"{d.TotalMilliseconds:0} ms" : "—")</td>
                     </tr>
+                    @if (e.RedactedResponse is { } payload)
+                    {
+                        @* Nur im Audit-Debug-Modus vorhanden; maskiert wie die Argumente. *@
+                        <tr>
+                            <td colspan="6"><pre class="mono">@payload.GetRawText()</pre></td>
+                        </tr>
+                    }
                 }
             </tbody>
         </table>
@@ -145,7 +152,7 @@
     {
         var all = await AuditQuery.QueryAsync(BuildFilter(1, 5000), CancellationToken.None);
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("timestamp,origin,caller,callerRoles,tool,detail,status,durationMs");
+        sb.AppendLine("timestamp,origin,caller,callerRoles,tool,detail,status,durationMs,redactedResponse");
         foreach (var e in all.Items)
         {
             sb.Append(e.Timestamp.UtcDateTime.ToString("O", CultureInfo.InvariantCulture)).Append(',')
@@ -155,7 +162,8 @@
               .Append(Csv(e.Tool)).Append(',')
               .Append(Csv(e.Detail)).Append(',')
               .Append(e.Status?.ToString() ?? "").Append(',')
-              .Append((e.Duration?.TotalMilliseconds ?? 0).ToString("0", CultureInfo.InvariantCulture))
+              .Append((e.Duration?.TotalMilliseconds ?? 0).ToString("0", CultureInfo.InvariantCulture)).Append(',')
+              .Append(Csv(e.RedactedResponse?.GetRawText()))
               .AppendLine();
         }
         await Download($"audit-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv", "text/csv", sb.ToString());
