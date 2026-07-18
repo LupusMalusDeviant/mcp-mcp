@@ -16,6 +16,7 @@ public sealed partial class GatewayStartupService : IHostedService
     private const string UiInternalIdentityName = "ui-internal";
 
     private readonly IDbContextFactory<McpMcpDbContext> _factory;
+    private readonly DatabaseInitializer _databaseInitializer;
     private readonly PersistentRbacStore _rbacStore;
     private readonly IApiKeyService _apiKeys;
     private readonly IUiUserService _uiUsers;
@@ -26,6 +27,7 @@ public sealed partial class GatewayStartupService : IHostedService
 
     public GatewayStartupService(
         IDbContextFactory<McpMcpDbContext> factory,
+        DatabaseInitializer databaseInitializer,
         PersistentRbacStore rbacStore,
         IApiKeyService apiKeys,
         IUiUserService uiUsers,
@@ -35,6 +37,7 @@ public sealed partial class GatewayStartupService : IHostedService
         ILogger<GatewayStartupService> logger)
     {
         _factory = factory;
+        _databaseInitializer = databaseInitializer;
         _rbacStore = rbacStore;
         _apiKeys = apiKeys;
         _uiUsers = uiUsers;
@@ -46,10 +49,8 @@ public sealed partial class GatewayStartupService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await using (var db = await _factory.CreateDbContextAsync(cancellationToken))
-        {
-            await db.Database.EnsureCreatedAsync(cancellationToken);
-        }
+        // Ab v1.1 über EF-Migrationen; erkennt und stempelt v1.0-Schemata ohne Migrationshistorie.
+        await _databaseInitializer.InitializeAsync(cancellationToken);
 
         await _rbacStore.LoadAsync(cancellationToken);
         await BootstrapAdminIfEmptyAsync(cancellationToken);

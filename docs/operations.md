@@ -49,7 +49,29 @@ docker compose --profile postgres up -d
 # und das Passwort (CHANGE_ME) ersetzen.
 ```
 
-Das Schema wird beim Start automatisch angelegt (v1: `EnsureCreated`; Migrations-Baseline ab v1.1).
+Das Schema wird beim Start automatisch über EF-Migrationen angelegt (siehe [Schema & Upgrades](#schema--upgrades)).
+
+## Schema & Upgrades
+
+Ab **v1.1** verwaltet der Gateway sein Datenbankschema über EF-Core-Migrationen. Beim Start passiert automatisch genau eine von drei Sachen — das Ergebnis steht im Log (`Datenbank initialisiert (…)`):
+
+| Vorgefunden | Aktion | Log-Ausgabe |
+|---|---|---|
+| Leere/neue DB | Schema aus Migrationen anlegen | `CreatedFromMigrations` |
+| **v1.0-DB** (per `EnsureCreated` erzeugt, ohne Migrationshistorie) | Initial-Migration als Baseline stempeln (**kein DDL, keine Datenänderung**), dann migrieren | `BaselinedLegacySchema` |
+| Bereits migrationsverwaltet | ausstehende Migrationen anwenden | `Migrated` |
+
+### Upgrade von v1.0 auf v1.1
+
+Es ist **kein manueller Schritt nötig** — der Gateway erkennt das Alt-Schema selbst und stempelt die Baseline. Trotzdem gilt die übliche Sorgfalt:
+
+1. Dienst stoppen.
+2. **Datenverzeichnis sichern** (`mcpmcp.db` **und** `keys/`, siehe [Backup](#backup)).
+3. Neue Version starten und im Log `BaselinedLegacySchema` bestätigen.
+
+Beim Rollback auf v1.0 ist die zusätzliche Tabelle `__EFMigrationsHistory` unschädlich — v1.0 ignoriert sie.
+
+Jeder Provider hat eine eigene Migrations-Assembly (`McpMcp.Persistence.Migrations.Sqlite` bzw. `.Postgres`), weil SQLite und PostgreSQL unterschiedliches DDL brauchen. Beide sind im Image enthalten; die Auswahl erfolgt automatisch über `MCPMCP_DB_PROVIDER`.
 
 ## TLS / Reverse-Proxy
 

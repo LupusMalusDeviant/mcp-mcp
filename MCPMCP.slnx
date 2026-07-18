@@ -2,6 +2,8 @@
   <Folder Name="/src/">
     <Project Path="src/McpMcp.Abstractions/McpMcp.Abstractions.csproj" />
     <Project Path="src/McpMcp.Core/McpMcp.Core.csproj" />
+    <Project Path="src/McpMcp.Persistence.Migrations.Postgres/McpMcp.Persistence.Migrations.Postgres.csproj" />
+    <Project Path="src/McpMcp.Persistence.Migrations.Sqlite/McpMcp.Persistence.Migrations.Sqlite.csproj" />
     <Project Path="src/McpMcp.Persistence/McpMcp.Persistence.csproj" />
     <Project Path="src/McpMcp.Server/McpMcp.Server.csproj" />
     <Project Path="src/McpMcp.Upstream/McpMcp.Upstream.csproj" />

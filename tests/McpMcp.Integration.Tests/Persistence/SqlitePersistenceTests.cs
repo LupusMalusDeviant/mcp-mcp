@@ -13,11 +13,22 @@ public sealed class SqlitePersistenceTests : PersistenceTestsBase
     private readonly string _dbPath = Path.Combine(
         Path.GetTempPath(), $"mcpmcp-test-{Guid.NewGuid():N}.db");
 
+    private readonly List<string> _extraDbPaths = [];
+
     protected override Task<DbContextOptions<McpMcpDbContext>?> CreateOptionsAsync()
         => Task.FromResult<DbContextOptions<McpMcpDbContext>?>(
             new DbContextOptionsBuilder<McpMcpDbContext>()
-                .UseSqlite($"Data Source={_dbPath}")
+                .UseMcpMcpDatabase(McpMcpDbOptions.Sqlite, $"Data Source={_dbPath}")
                 .Options);
+
+    protected override Task<DbContextOptions<McpMcpDbContext>> CreateFreshOptionsAsync(string name)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mcpmcp-{name}-{Guid.NewGuid():N}.db");
+        _extraDbPaths.Add(path);
+        return Task.FromResult(new DbContextOptionsBuilder<McpMcpDbContext>()
+            .UseMcpMcpDatabase(McpMcpDbOptions.Sqlite, $"Data Source={path}")
+            .Options);
+    }
 
     protected override void MarkSkippedIfUnavailable()
     {
@@ -27,9 +38,9 @@ public sealed class SqlitePersistenceTests : PersistenceTestsBase
     public override Task DisposeAsync()
     {
         SqliteConnection.ClearAllPools();
-        if (File.Exists(_dbPath))
+        foreach (var path in _extraDbPaths.Append(_dbPath).Where(File.Exists))
         {
-            File.Delete(_dbPath);
+            File.Delete(path);
         }
 
         return Task.CompletedTask;

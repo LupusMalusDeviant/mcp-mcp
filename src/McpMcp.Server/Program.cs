@@ -45,16 +45,8 @@ builder.Services.AddDataProtection()
     .SetApplicationName("MCPMCP")
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDir, "keys")));
 builder.Services.AddDbContextFactory<McpMcpDbContext>(options =>
-{
-    if (string.Equals(dbProvider, "postgres", StringComparison.OrdinalIgnoreCase))
-    {
-        options.UseNpgsql(connectionString);
-    }
-    else
-    {
-        options.UseSqlite(connectionString);
-    }
-});
+    options.UseMcpMcpDatabase(dbProvider, connectionString));
+builder.Services.AddSingleton<DatabaseInitializer>();
 builder.Services.AddSingleton(new PersistenceOptions());
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<GatewayIdentity>();

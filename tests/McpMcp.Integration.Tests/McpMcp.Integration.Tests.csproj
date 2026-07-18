@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpMcp.Server\McpMcp.Server.csproj" />
+    <ProjectReference Include="..\..\src\McpMcp.Persistence.Migrations.Sqlite\McpMcp.Persistence.Migrations.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\McpMcp.Persistence.Migrations.Postgres\McpMcp.Persistence.Migrations.Postgres.csproj" />
     <!-- Nur Build-Reihenfolge: TestServer werden als externe Prozesse gestartet, nicht referenziert. -->
     <ProjectReference Include="..\McpMcp.TestServers\EchoServer\McpMcp.TestServers.EchoServer.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\McpMcp.TestServers\CrashServer\McpMcp.TestServers.CrashServer.csproj" ReferenceOutputAssembly="false" />

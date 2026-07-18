@@ -35,6 +35,9 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
 
     protected abstract Task<DbContextOptions<McpMcpDbContext>?> CreateOptionsAsync();
 
+    /// <summary>Liefert eine zusätzliche, noch uninitialisierte Datenbank — für die Migrations-/Upgrade-Tests.</summary>
+    protected abstract Task<DbContextOptions<McpMcpDbContext>> CreateFreshOptionsAsync(string name);
+
     protected abstract void MarkSkippedIfUnavailable();
 
     public async Task InitializeAsync()
@@ -46,8 +49,8 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         }
 
         Factory = new TestDbContextFactory(options);
-        await using var db = await Factory.CreateDbContextAsync();
-        await db.Database.EnsureCreatedAsync();
+        // Tests nutzen denselben Migrationspfad wie der Host (v1.1), nicht mehr EnsureCreated.
+        await new DatabaseInitializer(Factory).InitializeAsync(CancellationToken.None);
     }
 
     public virtual Task DisposeAsync() => Task.CompletedTask;
@@ -326,6 +329,61 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
 
         var list = await store.ListAsync(IdentityId.New(), CancellationToken.None);
         list.Should().ContainSingle(a => a.Id == id).Which.LatestVersion.Value.Should().Be(2);
+    }
+
+    [SkippableFact]
+    public async Task Fresh_database_is_created_from_migrations()
+    {
+        MarkSkippedIfUnavailable();
+        IDbContextFactory<McpMcpDbContext> factory = new TestDbContextFactory(await CreateFreshOptionsAsync("fresh"));
+
+        var outcome = await new DatabaseInitializer(factory).InitializeAsync(CancellationToken.None);
+
+        outcome.Should().Be(DatabaseInitOutcome.CreatedFromMigrations);
+        await using var db = await factory.CreateDbContextAsync();
+        (await db.Database.GetAppliedMigrationsAsync()).Should().ContainSingle("die InitialCreate-Migration");
+        (await db.Database.GetPendingMigrationsAsync()).Should().BeEmpty();
+        (await db.Identities.CountAsync()).Should().Be(0, "das Schema ist nutzbar");
+    }
+
+    /// <summary>
+    /// Der eigentliche v1.1-Upgrade-Nachweis: eine v1.0-Datenbank (per EnsureCreated erzeugt, ohne
+    /// Migrationshistorie) darf beim Start weder scheitern noch Daten verlieren — sie wird gestempelt.
+    /// </summary>
+    [SkippableFact]
+    public async Task Legacy_v1_database_is_baselined_without_data_loss()
+    {
+        MarkSkippedIfUnavailable();
+        IDbContextFactory<McpMcpDbContext> factory = new TestDbContextFactory(await CreateFreshOptionsAsync("legacy"));
+        var identityId = Guid.NewGuid();
+
+        // v1.0-Zustand simulieren: Schema ohne Migrationshistorie + Bestandsdaten.
+        await using (var legacy = await factory.CreateDbContextAsync())
+        {
+            await legacy.Database.EnsureCreatedAsync();
+            legacy.Identities.Add(new IdentityRow
+            {
+                Id = identityId, Name = "bestandsagent", Kind = 0, RolesJson = "[]",
+            });
+            await legacy.SaveChangesAsync();
+            (await legacy.Database.GetAppliedMigrationsAsync()).Should().BeEmpty("v1.0 kannte keine Migrationen");
+        }
+
+        var outcome = await new DatabaseInitializer(factory).InitializeAsync(CancellationToken.None);
+
+        outcome.Should().Be(DatabaseInitOutcome.BaselinedLegacySchema);
+        await using (var upgraded = await factory.CreateDbContextAsync())
+        {
+            (await upgraded.Identities.SingleAsync()).Name
+                .Should().Be("bestandsagent", "das Upgrade darf keine Bestandsdaten anfassen");
+            (await upgraded.Database.GetAppliedMigrationsAsync())
+                .Should().ContainSingle("die Baseline ist als angewendet gestempelt");
+            (await upgraded.Database.GetPendingMigrationsAsync()).Should().BeEmpty();
+        }
+
+        // Zweiter Start derselben Instanz: normal migriert, nicht erneut gestempelt.
+        (await new DatabaseInitializer(factory).InitializeAsync(CancellationToken.None))
+            .Should().Be(DatabaseInitOutcome.Migrated, "Initialisierung ist idempotent");
     }
 
     private async Task WaitForRowCountAsync(int expected, int timeoutMs = 30000)

@@ -22,7 +22,7 @@ public sealed class PostgresPersistenceTests : PersistenceTestsBase
             _container = new PostgreSqlBuilder("postgres:17-alpine").Build();
             await _container.StartAsync();
             return new DbContextOptionsBuilder<McpMcpDbContext>()
-                .UseNpgsql(_container.GetConnectionString())
+                .UseMcpMcpDatabase(McpMcpDbOptions.Postgres, _container.GetConnectionString())
                 .Options;
         }
         catch (Exception ex)
@@ -30,6 +30,21 @@ public sealed class PostgresPersistenceTests : PersistenceTestsBase
             _unavailableReason = $"PostgreSQL-Testcontainer nicht startbar: {ex.Message}";
             return null;
         }
+    }
+
+    /// <summary>Legt für Migrations-/Upgrade-Tests eine zusätzliche, leere Datenbank im selben Container an.</summary>
+    protected override async Task<DbContextOptions<McpMcpDbContext>> CreateFreshOptionsAsync(string name)
+    {
+        var dbName = $"mcpmcp_{name}_{Guid.NewGuid():N}"[..40].ToLowerInvariant();
+        await _container!.ExecScriptAsync($"CREATE DATABASE {dbName};");
+        var connectionString = new Npgsql.NpgsqlConnectionStringBuilder(_container.GetConnectionString())
+        {
+            Database = dbName,
+        }.ConnectionString;
+
+        return new DbContextOptionsBuilder<McpMcpDbContext>()
+            .UseMcpMcpDatabase(McpMcpDbOptions.Postgres, connectionString)
+            .Options;
     }
 
     protected override void MarkSkippedIfUnavailable()
