@@ -13,16 +13,19 @@ public class DrainAndTimeoutIntegrationTests
     public async Task Call_timeout_cancels_slow_call_but_connection_survives()
     {
         await using var supervisor = IntegrationSupport.CreateSupervisor();
+        // 2-s-Timeout statt 500 ms: Die Aussage (langer Call läuft in den Timeout, kurzer danach nicht)
+        // bleibt durch den Abstand 30 s ≫ 2 s ≫ 10 ms erhalten, aber der kurze Folge-Call hat auch auf
+        // einem ausgelasteten CI-Runner genug Luft für seinen MCP-Roundtrip.
         var id = await supervisor.AddAsync(
-            IntegrationSupport.StdioServer("slow", "SlowServer", callTimeout: TimeSpan.FromMilliseconds(500)),
+            IntegrationSupport.StdioServer("slow", "SlowServer", callTimeout: TimeSpan.FromSeconds(2)),
             CancellationToken.None);
         await IntegrationSupport.WaitUntilAsync(
             () => supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
         var connection = supervisor.GetConnection(id)!;
 
         var slowCall = () => connection.CallToolAsync(
-            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 10000 }), CancellationToken.None);
-        await slowCall.Should().ThrowAsync<TimeoutException>("500ms CallTimeout gegen 10s Tool-Laufzeit");
+            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 30000 }), CancellationToken.None);
+        await slowCall.Should().ThrowAsync<TimeoutException>("2s CallTimeout gegen 30s Tool-Laufzeit");
 
         var quick = await connection.CallToolAsync(
             "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 10 }), CancellationToken.None);
