@@ -3,10 +3,17 @@ using System.Text;
 
 namespace McpMcp.Persistence;
 
-/// <summary>Geteiltes PBKDF2-SHA256-Hashing für API-Key-Secrets (WP3.3) und UI-Passwörter (WP6.1). Format: {iterations}.{saltB64}.{hashB64}.</summary>
+/// <summary>
+/// Geteiltes PBKDF2-SHA256-Hashing für API-Key-Secrets (WP3.3) und UI-Passwörter (WP6.1).
+/// Format: <c>{iterations}.{saltB64}.{hashB64}</c> — die Iterationszahl steckt im Hash, daher bleiben
+/// mit älteren Parametern erzeugte Hashes nach einer Erhöhung weiterhin verifizierbar (v1.1: 100k → 600k
+/// gemäß OWASP-Empfehlung für PBKDF2-SHA256).
+/// </summary>
 internal static class Pbkdf2Hasher
 {
-    private const int Iterations = 100_000;
+    /// <summary>Iterationen für NEUE Hashes (OWASP-Empfehlung für PBKDF2-SHA256).</summary>
+    private const int Iterations = 600_000;
+
     private const int SaltBytes = 16;
     private const int HashBytes = 32;
 

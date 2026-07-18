@@ -15,6 +15,9 @@
     <Project Path="tests/McpMcp.Upstream.Tests/McpMcp.Upstream.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/McpMcp.TestServers/" />
+  <Folder Name="/tests/McpMcp.TestServers/BulkServer/">
+    <Project Path="tests/McpMcp.TestServers/BulkServer/McpMcp.TestServers.BulkServer.csproj" />
+  </Folder>
   <Folder Name="/tests/McpMcp.TestServers/CrashServer/">
     <Project Path="tests/McpMcp.TestServers/CrashServer/McpMcp.TestServers.CrashServer.csproj" />
   </Folder>

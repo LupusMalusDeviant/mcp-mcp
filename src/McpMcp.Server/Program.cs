@@ -10,6 +10,7 @@ using McpMcp.Server;
 using McpMcp.Upstream;
 using McpMcp.Web;
 using McpMcp.Web.Components;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -41,9 +42,25 @@ var connectionString = builder.Configuration["MCPMCP_DB_CONNECTION"]
     ?? $"Data Source={Path.Combine(dataDir, "mcpmcp.db")}";
 
 // ── Persistenz & Schutz (ADR-0007, NFR-04) ───────────────────────────────────
-builder.Services.AddDataProtection()
+// Der Key-Ring entschlüsselt die at-rest verschlüsselten Upstream-Credentials. Ohne Zusatzschutz
+// liegt er im Klartext neben der DB (dokumentiertes Restrisiko). Optional per X509-Zertifikat
+// schützen — bewusst zertifikatsbasiert statt Cloud-KMS, damit es self-hosted funktioniert (WP8.1).
+var keyRing = builder.Services.AddDataProtection()
     .SetApplicationName("MCPMCP")
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDir, "keys")));
+
+var keyCertPath = builder.Configuration["MCPMCP_KEYRING_CERT_PATH"];
+var keyRingProtected = false;
+if (!string.IsNullOrWhiteSpace(keyCertPath))
+{
+    var certPassword = builder.Configuration["MCPMCP_KEYRING_CERT_PASSWORD"];
+    var certificate = X509CertificateLoader.LoadPkcs12FromFile(keyCertPath, certPassword);
+    keyRing.ProtectKeysWithCertificate(certificate)
+        // Für Zertifikatswechsel: mit dem alten Zertifikat verschlüsselte Keys bleiben lesbar,
+        // solange es hier weiterhin angegeben wird.
+        .UnprotectKeysWithAnyCertificate(certificate);
+    keyRingProtected = true;
+}
 builder.Services.AddDbContextFactory<McpMcpDbContext>(options =>
     options.UseMcpMcpDatabase(dbProvider, connectionString));
 builder.Services.AddSingleton<DatabaseInitializer>();
@@ -175,6 +192,23 @@ builder.Services.AddHostedService<AuditRetentionService>();
 builder.Services.AddHostedService<CatalogNotificationService>();
 
 var app = builder.Build();
+
+if (!keyRingProtected)
+{
+    // CA1848: einmaliger Start-Log, LoggerMessage-Codegen brächte hier nichts.
+#pragma warning disable CA1848
+    app.Logger.LogWarning(
+        "DataProtection-Key-Ring liegt ungeschützt unter {Path}. Er entschlüsselt die gespeicherten " +
+        "Upstream-Credentials — Verzeichnis restriktiv halten oder MCPMCP_KEYRING_CERT_PATH setzen.",
+        Path.Combine(dataDir, "keys"));
+#pragma warning restore CA1848
+}
+
+// Recovery-Kommandos (WP8.4) laufen ohne Gateway-Start und beenden den Prozess.
+if (AdminCommands.IsAdminCommand(args))
+{
+    return await AdminCommands.RunAsync(app, args);
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

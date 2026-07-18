@@ -331,6 +331,83 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         list.Should().ContainSingle(a => a.Id == id).Which.LatestVersion.Value.Should().Be(2);
     }
 
+    /// <summary>
+    /// v1.1 hebt PBKDF2 von 100k auf 600k Iterationen. Bestehende Hashes tragen ihre Iterationszahl
+    /// im Format mit und müssen weiterhin verifizieren — sonst würde das Upgrade alle Logins sperren.
+    /// </summary>
+    [SkippableFact]
+    public async Task Password_hashed_with_legacy_iteration_count_still_verifies()
+    {
+        MarkSkippedIfUnavailable();
+        const string password = "bestands-passwort";
+        const int legacyIterations = 100_000;
+        var username = $"altnutzer-{Guid.NewGuid():N}";
+
+        // Hash im v1.0-Format (100k) von Hand erzeugen und direkt persistieren.
+        var salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        var hash = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password), salt, legacyIterations,
+            System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
+        var legacyHash = $"{legacyIterations}.{Convert.ToBase64String(salt)}.{Convert.ToBase64String(hash)}";
+
+        await using (var db = await Factory.CreateDbContextAsync())
+        {
+            db.UiUsers.Add(new UiUserRow
+            {
+                Id = Guid.NewGuid(),
+                Username = username,
+                PasswordHash = legacyHash,
+                Role = (int)UiRole.Admin,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var service = new UiUserService(Factory);
+        (await service.ValidateCredentialsAsync(username, password, CancellationToken.None))
+            .Should().NotBeNull("v1.0-Hashes müssen nach der Iterations-Erhöhung weiter funktionieren");
+        (await service.ValidateCredentialsAsync(username, "falsch", CancellationToken.None))
+            .Should().BeNull();
+    }
+
+    /// <summary>WP8.4: Die Recovery-Kommandos müssen aus dem „kein Zugang mehr"-Zustand herausführen.</summary>
+    [SkippableFact]
+    public async Task Recovery_commands_restore_ui_and_agent_access()
+    {
+        MarkSkippedIfUnavailable();
+        var users = new UiUserService(Factory);
+        var username = $"recovery-{Guid.NewGuid():N}";
+
+        // Fall 1: Nutzer existiert nicht → wird als Admin angelegt.
+        var created = await McpMcp.Server.AdminCommands.ResetUiAdminAsync(users, username, CancellationToken.None);
+        created.WasExisting.Should().BeFalse();
+        created.Role.Should().Be(UiRole.Admin);
+        (await users.ValidateCredentialsAsync(username, created.Password, CancellationToken.None))
+            .Should().NotBeNull("das ausgegebene Passwort muss funktionieren");
+
+        // Fall 2: Nutzer existiert → Passwort neu, Rolle unverändert, altes Passwort ungültig.
+        var reset = await McpMcp.Server.AdminCommands.ResetUiAdminAsync(users, username, CancellationToken.None);
+        reset.WasExisting.Should().BeTrue();
+        reset.Password.Should().NotBe(created.Password);
+        (await users.ValidateCredentialsAsync(username, reset.Password, CancellationToken.None)).Should().NotBeNull();
+        (await users.ValidateCredentialsAsync(username, created.Password, CancellationToken.None))
+            .Should().BeNull("das alte Passwort darf nach dem Reset nicht mehr gelten");
+
+        // Notfall-API-Key: neue Identität mit Global-Grant, Key ist sofort gültig.
+        var directory = new InMemoryRbacDirectory();
+        var rbac = new PersistentRbacStore(Factory, directory);
+        var keys = new ApiKeyService(Factory);
+        var recovery = await McpMcp.Server.AdminCommands.IssueBootstrapKeyAsync(rbac, keys, CancellationToken.None);
+
+        recovery.ApiKey.Should().StartWith("mcpk_");
+        var identityId = await keys.ValidateAsync(recovery.ApiKey, CancellationToken.None);
+        identityId.Should().NotBeNull("der ausgegebene Key muss sofort validieren");
+
+        var authorization = new AuthorizationService(directory);
+        authorization.Evaluate(identityId!.Value, new PermissionScope(null, null), ToolAction.UseTool)
+            .Allowed.Should().BeTrue("die Notfall-Identität trägt einen Global-Grant");
+    }
+
     [SkippableFact]
     public async Task Fresh_database_is_created_from_migrations()
     {

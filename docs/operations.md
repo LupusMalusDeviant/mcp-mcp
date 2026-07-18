@@ -29,6 +29,8 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `MCPMCP_DB_PROVIDER` | `sqlite` | `sqlite` oder `postgres` |
 | `MCPMCP_DB_CONNECTION` | `Data Source=<datadir>/mcpmcp.db` | Connection-String (bei Postgres Pflicht) |
 | `ASPNETCORE_URLS` | `http://+:8080` (Container) | Bind-Adresse/Port |
+| `MCPMCP_KEYRING_CERT_PATH` | *(nicht gesetzt)* | PFX-Zertifikat zum Verschlüsseln des Key-Rings (siehe [Key-Ring schützen](#key-ring-schützen)) |
+| `MCPMCP_KEYRING_CERT_PASSWORD` | *(nicht gesetzt)* | Passwort des PFX |
 
 ## Agent anbinden
 
@@ -105,12 +107,42 @@ Das Audit-Log wächst mit jedem Call. Default-Aufbewahrung: 30 Tage, stündliche
 
 Der Container-Healthcheck nutzt `dotnet McpMcp.Server.dll --healthcheck` (self-ping, da das schlanke Runtime-Image kein `curl` enthält). Der Container läuft als non-root `app`-User.
 
+## Key-Ring schützen
+
+Der DataProtection-Key-Ring unter `<datadir>/keys/` entschlüsselt die at-rest verschlüsselten Upstream-Credentials. Ohne Zusatzschutz liegt er im Klartext neben der Datenbank — der Gateway warnt beim Start entsprechend.
+
+Ab v1.1 lässt er sich mit einem X509-Zertifikat verschlüsseln (bewusst zertifikatsbasiert statt Cloud-KMS, damit es self-hosted funktioniert):
+
+```bash
+# Zertifikat einmalig erzeugen (Beispiel, OpenSSL):
+openssl req -x509 -newkey rsa:2048 -keyout k.pem -out c.pem -days 3650 -nodes -subj "/CN=mcpmcp-keyring"
+openssl pkcs12 -export -out keyring.pfx -inkey k.pem -in c.pem -password pass:GEHEIM
+
+# Gateway damit starten:
+MCPMCP_KEYRING_CERT_PATH=/secrets/keyring.pfx
+MCPMCP_KEYRING_CERT_PASSWORD=GEHEIM
+```
+
+Danach enthalten die XML-Dateien im Key-Ring nur noch verschlüsseltes Material. **Das Zertifikat wird zum Entschlüsseln gebraucht** — geht es verloren, sind die gespeicherten Upstream-Credentials unbrauchbar (die Server müssen dann neu konfiguriert werden). Zertifikat also getrennt vom Datenverzeichnis sichern. Beim Zertifikatswechsel bleibt Altmaterial lesbar, solange das alte Zertifikat weiterhin angegeben wird.
+
 ## Zugang zurücksetzen
 
-Bootstrap-Zugänge werden nur bei **leerer** DB erzeugt. Verlorene Zugänge:
+Bootstrap-Zugänge werden nur bei **leerer** DB erzeugt. Für verlorene Zugänge gibt es ab v1.1 zwei Kommandos, die gegen die konfigurierte Datenbank laufen, den Zugang **einmalig** ausgeben und sich beenden, ohne den Gateway zu starten:
 
-- **UI-Passwort vergessen, aber anderer Admin existiert** → über die UI (Seite „UI-Nutzer") neu setzen.
-- **Kein Zugang mehr** → betrieblicher Reset nötig: Datenverzeichnis sichern, DB-Zeilen `UiUsers` (für UI) bzw. `ApiKeys` (für Agenten) gezielt entfernen und den Dienst neu starten — der Bootstrap greift wieder, sobald die jeweilige Tabelle leer ist. (Ein CLI-Reset-Kommando ist v1.1-Kandidat.)
+```bash
+# UI-Passwort zurücksetzen (Default-Benutzer "admin"; Rolle bleibt unverändert,
+# ein fehlender Nutzer wird als Admin angelegt):
+docker compose run --rm mcpmcp dotnet McpMcp.Server.dll --reset-ui-admin
+docker compose run --rm mcpmcp dotnet McpMcp.Server.dll --reset-ui-admin betreiber
+
+# Notfall-API-Key: legt eine NEUE Agenten-Identität mit Global-Grant an
+# (bestehende bleiben unangetastet):
+docker compose run --rm mcpmcp dotnet McpMcp.Server.dll --issue-bootstrap-key
+```
+
+Ohne Container analog mit `dotnet run --project src/McpMcp.Server -- --reset-ui-admin`. Den Notfall-Zugang nach Gebrauch wieder entfernen, falls er nur der Wiederherstellung diente.
+
+- **UI-Passwort vergessen, aber anderer Admin existiert** → einfacher über die UI (Seite „UI-Nutzer") neu setzen.
 
 ## Sicherheit
 
