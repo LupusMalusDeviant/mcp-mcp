@@ -125,12 +125,12 @@ public sealed partial class DatabaseInitializer
         var productVersion = typeof(DbContext).Assembly.GetName().Version?.ToString() ?? "10.0.0";
 
         Log.BaseliningLegacySchema(_logger, baseline);
-#pragma warning disable EF1002 // Skripte kommen aus EF, nicht aus Nutzereingaben
-        if (!await history.ExistsAsync(ct).ConfigureAwait(false))
-        {
-            await db.Database.ExecuteSqlRawAsync(history.GetCreateScript(), ct).ConfigureAwait(false);
-        }
 
+        // Bewusst das idempotente Create-Skript statt einer ExistsAsync()-Abfrage: EF cacht das
+        // Exists-Ergebnis pro Repository-Instanz, wodurch die Prüfung nach vorherigen Aufrufen
+        // veraltet sein kann (auf Npgsql beobachtet). "IF NOT EXISTS" ist unabhängig davon korrekt.
+#pragma warning disable EF1002 // Skripte kommen aus EF, nicht aus Nutzereingaben
+        await db.Database.ExecuteSqlRawAsync(history.GetCreateIfNotExistsScript(), ct).ConfigureAwait(false);
         await db.Database
             .ExecuteSqlRawAsync(history.GetInsertScript(new HistoryRow(baseline, productVersion)), ct)
             .ConfigureAwait(false);
