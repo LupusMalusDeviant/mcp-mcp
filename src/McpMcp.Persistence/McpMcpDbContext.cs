@@ -4,8 +4,9 @@ namespace McpMcp.Persistence;
 
 /// <summary>
 /// EF-Core-Modell (ADR-0007). Provider-neutral gehalten: JSON-Blobs für Listen,
-/// DateTimeOffset immer UTC (Npgsql-timestamptz-Kompatibilität). Schema-Erzeugung v1 über
-/// EnsureCreated; Migrations-Baseline folgt mit WP7 (Plan-Änderungslog WP3).
+/// DateTimeOffset immer UTC (Npgsql-timestamptz-Kompatibilität). Die Schema-Erzeugung läuft über
+/// EF-Migrationen je Provider; <see cref="DatabaseInitializer"/> stempelt dabei v1.0-Datenbanken,
+/// die noch aus der EnsureCreated-Zeit stammen, auf die Baseline.
 /// </summary>
 public sealed class McpMcpDbContext : DbContext
 {

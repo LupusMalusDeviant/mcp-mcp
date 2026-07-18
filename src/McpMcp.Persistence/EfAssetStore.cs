@@ -3,7 +3,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace McpMcp.Persistence;
 
-/// <summary>Versionierte Text-Assets (FR-40, WP6.4). RBAC-Filterung ist v1 offen (alle sichtbar); Auslieferung als MCP-Prompt/Resource kommt später.</summary>
+/// <summary>
+/// Versionierte Text-Assets (FR-40, WP6.4). Die Auslieferung als MCP-Prompt/Resource erfolgt in
+/// <c>GatewayMcpHandlers</c> unter dem reservierten Namespace <c>assets</c>.
+/// Bewusste Grenze: keine per-Asset-RBAC — Assets sind zentrale Instruktionstexte und für jede
+/// authentifizierte Identität sichtbar; sie eröffnen keinen Zugriff auf Fremdsysteme.
+/// </summary>
 public sealed class EfAssetStore : IAssetStore
 {
     private readonly IDbContextFactory<McpMcpDbContext> _factory;

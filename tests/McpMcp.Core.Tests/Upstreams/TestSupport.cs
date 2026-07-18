@@ -49,6 +49,28 @@ internal static class TestData
     }
 
     /// <summary>
+    /// Prüft, dass eine Bedingung über mehrere Scheduler-Runden hinweg falsch BLEIBT — für
+    /// Negativ-Aussagen wie „der Drain wartet noch".
+    ///
+    /// Bewusst ohne Wanduhr-Pause: Alles, was hier warten würde, hängt an der Fake-Uhr, die der
+    /// Test selbst nicht vorstellt. Ein <c>Task.Delay</c> würde die Aussage nicht stärker machen,
+    /// sondern nur den Testlauf verlängern und auf langsamen Runnern kippen können.
+    /// </summary>
+    public static async Task StaysFalseAsync(Func<bool> condition, int rounds = 20, string? because = null)
+    {
+        for (var i = 0; i < rounds; i++)
+        {
+            if (condition())
+            {
+                throw new InvalidOperationException(
+                    $"Bedingung wurde wahr, obwohl sie falsch bleiben sollte{(because is null ? string.Empty : $": {because}")}.");
+            }
+
+            await Task.Yield();
+        }
+    }
+
+    /// <summary>
     /// Pollt eine Bedingung und rückt die Fake-Uhr dabei schrittweise vor. Robust gegen das Registrierungs-Race
     /// (Advance vor Task.Delay/PeriodicTimer-Registrierung): kleine Schritte + Echtzeit-Pausen lassen den Loop
     /// zwischendurch registrieren. Nur mit monotonen Bedingungen (Zähler, Event-Listen, Endzustände) verwenden.

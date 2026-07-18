@@ -44,6 +44,15 @@ Der Gateway ist der zentrale Vertrauensanker (ADR-0001): Er terminiert jeden Cal
 - **Login-Endpoint ohne Antiforgery-Token**: vor der Anmeldung existiert kein gültiges Token; Login-CSRF-Restrisiko durch `SameSite=Strict` mitigiert.
 - **UI-Tool-Test unter Global-Grant-Identität**: UI-Operatoren können jedes Tool testen, unabhängig vom per-Key-RBAC — gerahmt durch die UI-Rollen (nur Operator/Admin). So gewollt („Test-Aufruf mit Admin-Rechten").
 - **Existenz-Leak bei `tools/call`-Deny**: ein verbotenes Tool liefert `Denied` (statt `ToolNotFound`), bestätigt also seine Existenz. `describe_tool` leakt bewusst nicht (verhält sich wie „nicht gefunden"). Minor Info-Disclosure.
+- **Federations-Loop-Erkennung deckt nur den direkten Selbstbezug** (FR-05): Der Header
+  `X-McpMcp-Instance` wird beim Aufbau der Upstream-Verbindung *einmal* gesetzt und kennt den
+  auslösenden Request nicht — eine Instanz-Kette lässt sich damit nicht weiterreichen. Erkannt wird
+  daher A→A, **nicht** A→B→A. Die Fehlermeldung behauptete zwischenzeitlich „direkt oder transitiv";
+  das war eine Zusicherung, die der Mechanismus nie eingelöst hat, und ist korrigiert.
+  **Mitigation:** Der Call-Timeout je Upstream (`DefaultCallTimeout`, FR-09) begrenzt den Schaden —
+  ein zyklischer Verbund läuft in Timeouts statt in unbegrenzte Rekursion, und die Fehlerquote im
+  Dashboard wird sofort auffällig. **Betriebsregel:** Gateway-Verbünde azyklisch konfigurieren.
+  Echte transitive Erkennung bräuchte Call-Metadaten statt Verbindungs-Header — v2-Kandidat.
 - ~~**PBKDF2 100k < OWASP-Empfehlung (600k)**~~ ✅ **in v1.1 behoben:** neue Hashes nutzen 600 000 Iterationen. Bestandshashes tragen ihre Iterationszahl im Format und bleiben verifizierbar (per Test belegt), ein Upgrade sperrt also niemanden aus.
 
 ## Reporting

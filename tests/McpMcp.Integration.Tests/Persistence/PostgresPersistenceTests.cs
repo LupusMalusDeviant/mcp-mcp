@@ -10,9 +10,17 @@ namespace McpMcp.Integration.Tests.Persistence;
 /// Identische Suite gegen echtes PostgreSQL (ADR-0007: Zwei-Provider-Disziplin per CI).
 /// Ohne erreichbaren Docker-Daemon (z. B. Windows-CI-Runner mit Windows-Containern)
 /// werden die Tests übersprungen — der Ubuntu-CI-Lauf trägt den Postgres-Nachweis.
+///
+/// Damit dieser Nachweis nicht still ausfallen kann, erzwingt <c>MCPMCP_REQUIRE_POSTGRES=1</c>
+/// (in CI auf Linux gesetzt) das Durchreichen jedes Fehlers: dort ist Docker vorhanden, ein
+/// Fehlschlag ist also ein echter Defekt und kein Umgebungsproblem. Ohne die Unterscheidung
+/// würde ein kaputtes Image oder ein Migrationsfehler als grüner Skip durchgehen.
 /// </summary>
 public sealed class PostgresPersistenceTests : PersistenceTestsBase
 {
+    private static bool PostgresRequired =>
+        Environment.GetEnvironmentVariable("MCPMCP_REQUIRE_POSTGRES") is "1" or "true";
+
     private PostgreSqlContainer? _container;
     private string? _unavailableReason;
 
@@ -26,7 +34,7 @@ public sealed class PostgresPersistenceTests : PersistenceTestsBase
                 .UseMcpMcpDatabase(McpMcpDbOptions.Postgres, _container.GetConnectionString())
                 .Options;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!PostgresRequired)
         {
             _unavailableReason = $"PostgreSQL-Testcontainer nicht startbar: {ex.Message}";
             return null;

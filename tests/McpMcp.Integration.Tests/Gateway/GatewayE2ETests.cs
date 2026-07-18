@@ -35,6 +35,23 @@ public sealed class GatewayE2ETests : IClassFixture<GatewayFixture>
     }
 
     [Fact]
+    public async Task Negotiated_protocol_version_meets_the_required_spec_revision()
+    {
+        // NFR-09: Die Protokollversion kommt vollständig aus dem SDK — ohne Test verschiebt ein
+        // SDK-Upgrade sie still, und die Zusicherung "2025-06-18 oder neuer" wäre unbelegt.
+        var (_, apiKey) = await _gw.SeedAdminAsync("protocol");
+
+        await using var client = await _gw.ConnectClientAsync(apiKey);
+
+        var negotiated = client.NegotiatedProtocolVersion;
+        negotiated.Should().NotBeNullOrWhiteSpace();
+
+        // Die Revisionen sind datumssortiert benannt, ein Stringvergleich reicht darum aus.
+        string.CompareOrdinal(negotiated, "2025-06-18").Should().BeGreaterThanOrEqualTo(0,
+            $"NFR-09 verlangt 2025-06-18 oder neuer, ausgehandelt wurde '{negotiated}'");
+    }
+
+    [Fact]
     public async Task Meta_tools_search_describe_invoke_work_end_to_end()
     {
         await _gw.AddEchoUpstreamAsync("lazy1");

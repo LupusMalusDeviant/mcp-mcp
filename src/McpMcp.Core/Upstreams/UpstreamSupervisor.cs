@@ -315,6 +315,7 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
 
                 attempts = 0;
                 var healthySince = _time.GetUtcNow();
+                var pingFailures = 0;
                 using var timer = new PeriodicTimer(_options.HealthCheckInterval, _time);
                 while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
                 {
@@ -328,7 +329,23 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
                     }
                     catch (Exception ex)
                     {
-                        throw new UpstreamConnectionLostException($"Health-Ping fehlgeschlagen: {ex.Message}", ex);
+                        // FR-08: erst Degraded, dann Failed. Die Verbindung bleibt bestehen und
+                        // bedient weiter Calls — der Zustand macht die Störung aber sichtbar,
+                        // statt sie bis zum Abriss zu verschweigen.
+                        if (++pingFailures > _options.DegradedPingTolerance)
+                        {
+                            throw new UpstreamConnectionLostException($"Health-Ping fehlgeschlagen: {ex.Message}", ex);
+                        }
+
+                        SetState(entry, UpstreamState.Degraded, $"Health-Ping fehlgeschlagen: {ex.Message}");
+                        continue;
+                    }
+
+                    if (pingFailures > 0)
+                    {
+                        pingFailures = 0;
+                        healthySince = _time.GetUtcNow();
+                        SetState(entry, UpstreamState.Healthy, null);
                     }
 
                     var now = _time.GetUtcNow();

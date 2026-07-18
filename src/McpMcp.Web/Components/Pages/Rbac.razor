@@ -119,6 +119,10 @@
         </div>
         <div class="row" style="margin-top:.75rem">
             <div><label>Label</label><input @bind="_keyLabel" placeholder="ci-agent" /></div>
+            <div>
+                <label title="Leer lassen für einen unbefristeten Schlüssel.">Gültig bis (optional)</label>
+                <input type="date" @bind="_keyExpiresAt" />
+            </div>
             <div style="flex:0"><button style="margin-top:1.35rem" @onclick="IssueKey">Key erzeugen</button></div>
         </div>
     </div>
@@ -133,6 +137,7 @@
     private string _roleName = "", _roleTools = ""; private int? _roleRate; private bool _roleGlobal, _roleOk; private string? _roleMsg;
     private string _idName = ""; private string _idProfile = ""; private readonly HashSet<RoleId> _idRoles = []; private bool _idOk; private string? _idMsg;
     private IdentityId? _keyIdentity; private string _keyLabel = ""; private string? _newKey;
+    private DateTime? _keyExpiresAt;
 
     protected override Task OnInitializedAsync() => Reload();
 
@@ -220,9 +225,18 @@
     private async Task IssueKey()
     {
         if (_keyIdentity is null || string.IsNullOrWhiteSpace(_keyLabel)) return;
-        var issued = await ApiKeys.IssueAsync(_keyIdentity.Value, _keyLabel.Trim(), null, CancellationToken.None);
-        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, $"key-issued:{_keyLabel}");
-        _newKey = issued.PlaintextKey; _keyLabel = "";
+
+        // FR-31: Gültigkeitsfenster gehört in die UI — ein befristeter Schlüssel darf keinen
+        // REST-Aufruf erfordern (Z-6). Das Datum gilt bis zum Ende des gewählten Tages (UTC).
+        var expiresAt = _keyExpiresAt is { } date
+            ? new DateTimeOffset(date.Date.AddDays(1).AddTicks(-1), TimeSpan.Zero)
+            : (DateTimeOffset?)null;
+
+        var issued = await ApiKeys.IssueAsync(_keyIdentity.Value, _keyLabel.Trim(), expiresAt, CancellationToken.None);
+        UiAudit.Record(
+            Audit, Time, await UserAsync(), AuditEventKind.RbacChanged,
+            $"key-issued:{_keyLabel}{(expiresAt is null ? "" : $" (bis {expiresAt:yyyy-MM-dd})")}");
+        _newKey = issued.PlaintextKey; _keyLabel = ""; _keyExpiresAt = null;
         _keys = await ApiKeys.ListAsync(_keyIdentity.Value, CancellationToken.None);
     }
 

@@ -25,14 +25,20 @@ public sealed class ApiKeyAuthMiddleware
         }
 
         // Federations-Loop (FR-05): trägt der Aufruf unsere eigene Instanz-Kennung, ist der
-        // Gateway (direkt oder über eine Kette) als sein eigener Upstream konfiguriert → abweisen.
+        // Gateway direkt als sein eigener Upstream konfiguriert → abweisen.
+        //
+        // Grenze, bewusst und im Threat-Model dokumentiert: erkannt wird nur der DIREKTE Selbstbezug.
+        // Für eine Kette A→B→A müsste die Instanz-Liste pro Call weitergereicht werden; die
+        // Header der Upstream-Verbindung werden aber einmal beim Verbindungsaufbau gesetzt und
+        // kennen den auslösenden Request nicht. Eine Meldung, die "transitiv" verspricht, wäre
+        // eine Zusicherung, die der Mechanismus nicht einlöst.
         if (context.Request.Headers.TryGetValue(GatewayIdentity.InstanceHeader, out var instance)
             && instance == gateway.InstanceId)
         {
             context.Response.StatusCode = StatusCodes.Status508LoopDetected;
             await context.Response.WriteAsJsonAsync(new
             {
-                error = "Federations-Loop erkannt: Dieser Gateway ist (direkt oder transitiv) sein eigener Upstream.",
+                error = "Federations-Loop erkannt: Dieser Gateway ist als sein eigener Upstream konfiguriert.",
             });
             return;
         }

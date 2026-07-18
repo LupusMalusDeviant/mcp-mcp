@@ -38,6 +38,7 @@
                                 {
                                     <button class="btn-sm btn-ghost" @onclick="() => SetEnabled(s.Id, false)">Deaktivieren</button>
                                 }
+                                <button class="btn-sm btn-ghost" @onclick="() => StartEdit(s.Id)">Bearbeiten</button>
                                 <button class="btn-sm btn-ghost" @onclick="() => ShowHistory(s.Id, s.Slug)">Versionen</button>
                                 <button class="btn-sm btn-danger" @onclick="() => Remove(s.Id, s.Slug)">Entfernen</button>
                             </td>
@@ -105,7 +106,19 @@
 }
 
 <div class="card">
-    <h3 style="margin-top:0">Neuen Server anschließen</h3>
+    @if (_editServer is null)
+    {
+        <h3 style="margin-top:0">Neuen Server anschließen</h3>
+    }
+    else
+    {
+        <h3 style="margin-top:0">Server bearbeiten: <span class="mono">@_editSlug</span></h3>
+        <p class="muted">
+            Speichern erzeugt eine neue Konfigurations-Version und startet den Server damit neu (FR-10/34).
+            Secret-Felder sind leer: <strong>leer lassen heißt unverändert</strong> — bestehende Werte
+            werden nicht angezeigt und nicht überschrieben.
+        </p>
+    }
     <div class="row">
         <div>
             <label>Transport</label>
@@ -171,7 +184,15 @@
 
     <div class="toolbar" style="margin-top:1rem">
         <button class="btn-ghost" @onclick="Test" disabled="@_busy">Verbindung testen</button>
-        <button @onclick="Add" disabled="@_busy">Anschließen</button>
+        @if (_editServer is null)
+        {
+            <button @onclick="Add" disabled="@_busy">Anschließen</button>
+        }
+        else
+        {
+            <button @onclick="SaveEdit" disabled="@_busy">Änderungen speichern</button>
+            <button class="btn-ghost" @onclick="CancelEdit" disabled="@_busy">Abbrechen</button>
+        }
         @if (_message is not null)
         {
             <span class="@(_ok ? "msg-ok" : "msg-err")">@_message</span>
@@ -189,6 +210,10 @@
     private OpenApiAuthKind _openApiAuth = OpenApiAuthKind.None;
     private bool _busy, _ok;
     private string? _message;
+
+    private ServerId? _editServer;
+    private string _editSlug = "";
+    private UpstreamServerConfig? _editBase;
 
     private ServerId? _historyServer;
     private string _historySlug = "";
@@ -287,6 +312,74 @@
         }
         _busy = false;
     }
+
+    private async Task StartEdit(ServerId id)
+    {
+        _message = null; _historyServer = null;
+        var history = await ConfigStore.GetHistoryAsync(id, CancellationToken.None);
+        var current = history.OrderByDescending(v => v.Version.Value).FirstOrDefault()?.Config;
+        if (current is null)
+        {
+            _ok = false; _message = "Keine gespeicherte Konfiguration gefunden.";
+            return;
+        }
+
+        _editServer = id; _editSlug = current.Slug; _editBase = current;
+        _kind = current.Kind;
+        _slug = current.Slug;
+        _displayName = current.DisplayName;
+
+        // Secrets (Env, Header, Credential) werden bewusst NICHT vorbefüllt — sie stünden sonst
+        // im Klartext im DOM. Leer gelassen übernimmt SaveEdit die bestehenden Werte.
+        _command = current.Stdio?.Command ?? "";
+        _args = current.Stdio?.Arguments is { } a ? string.Join(' ', a) : "";
+        _env = "";
+        _httpUrl = current.Http?.Endpoint.ToString() ?? "";
+        _headers = "";
+        _allowLegacySse = current.Http?.AllowLegacySse ?? true;
+        _specUrl = current.OpenApi?.SpecLocation.ToString() ?? "";
+        _baseUrl = current.OpenApi?.BaseAddress?.ToString() ?? "";
+        _openApiAuth = current.OpenApi?.AuthKind ?? OpenApiAuthKind.None;
+        _apiKeyHeader = current.OpenApi?.ApiKeyHeaderName ?? "X-Api-Key";
+        _credential = "";
+    }
+
+    private void CancelEdit()
+    {
+        _editServer = null; _editBase = null; _message = null;
+        ClearForm();
+    }
+
+    private async Task SaveEdit()
+    {
+        if (_editServer is not { } id || _editBase is not { } previous) { return; }
+
+        _busy = true; _message = null;
+        var config = BuildConfig(out var err);
+        if (config is null) { _ok = false; _message = err; _busy = false; return; }
+
+        config = McpMcp.Core.Upstreams.UpstreamConfigMerge.CarryOverSecrets(config, previous);
+
+        try
+        {
+            var version = await Supervisor.ReconfigureAsync(id, config, CancellationToken.None);
+            UiAudit.Record(
+                Audit, Time, await UserAsync(), AuditEventKind.ConfigChanged,
+                $"server-reconfigured:{config.Slug}:v{version.Value}", id);
+            _ok = true; _message = $"'{config.Slug}' gespeichert als v{version.Value}.";
+            _editServer = null; _editBase = null;
+            ClearForm();
+            Reload();
+        }
+        catch (Exception ex)
+        {
+            _ok = false; _message = ex.Message;
+        }
+        _busy = false;
+    }
+
+    private void ClearForm()
+        => _slug = _displayName = _command = _args = _env = _httpUrl = _headers = _specUrl = _baseUrl = _credential = "";
 
     private async Task SetEnabled(ServerId id, bool enabled)
     {

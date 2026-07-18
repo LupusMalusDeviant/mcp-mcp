@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Wöchentlicher Lasttest — hält den Benchmark am Leben, statt ihn auf ewig zu überspringen.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
 
 jobs:
   build-test:
@@ -23,13 +27,72 @@ jobs:
         run: dotnet build --configuration Release
 
       - name: Test with coverage
-        run: dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --results-directory ./coverage
+        env:
+          # Auf Linux ist Docker da — ein nicht startbarer Postgres-Container ist dort ein
+          # echter Fehler und darf nicht zum stillen Skip werden.
+          MCPMCP_REQUIRE_POSTGRES: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
+        run: dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --results-directory ./coverage --logger "trx;LogFileName=results.trx"
+
+      # Der Postgres-Nachweis läuft über Testcontainers und skippt, wenn kein Docker da ist.
+      # Auf Ubuntu ist Docker vorhanden — ein Skip bedeutet dort also einen echten Fehler
+      # (Image-Pull, Connection-String, Migration) und darf nicht als grün durchgehen.
+      - name: Postgres-Nachweis muss auf Linux tatsächlich gelaufen sein
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          SKIPPED=$(grep -o 'outcome="NotExecuted"' coverage/results.trx | wc -l)
+          echo "Übersprungene Tests: $SKIPPED"
+          # Erlaubt ist genau der Benchmark, der bewusst einen eigenen Job hat.
+          if [ "$SKIPPED" -gt 1 ]; then
+            echo "::error::$SKIPPED Tests übersprungen — erwartet war höchstens der Benchmark. Postgres-Nachweis vermutlich still ausgefallen."
+            grep -o 'testName="[^"]*"[^>]*outcome="NotExecuted"' coverage/results.trx || true
+            exit 1
+          fi
+
+      # NFR-08 verlangt ≥ 80 % Zeilenabdeckung der Kern-Bibliothek. Ohne Gate ist die Zahl eine
+      # Momentaufnahme im Artefakt, die niemand liest — und sie sinkt unbemerkt.
+      - name: Coverage-Schwelle Kern-Bibliothek (NFR-08)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          BEST=0
+          for f in $(find coverage -name 'coverage.cobertura.xml'); do
+            RATE=$(grep -o '<package name="McpMcp.Core" line-rate="[0-9.]*"' "$f" \
+                   | grep -o 'line-rate="[0-9.]*"' | grep -o '[0-9.]*' || true)
+            if [ -n "$RATE" ]; then
+              PCT=$(awk -v r="$RATE" 'BEGIN { printf "%d", r * 10000 }')
+              [ "$PCT" -gt "$BEST" ] && BEST=$PCT
+            fi
+          done
+          echo "McpMcp.Core Zeilenabdeckung: $(awk -v b="$BEST" 'BEGIN { printf "%.2f", b / 100 }') %"
+          if [ "$BEST" -lt 8000 ]; then
+            echo "::error::Zeilenabdeckung von McpMcp.Core unter der NFR-08-Schwelle von 80 %."
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-${{ matrix.os }}
           path: coverage
+
+  benchmark:
+    # NFR-01/02: Der Lasttest assertiert die Schwellen (p95 ≤ 50 ms, tools/list p95 ≤ 200 ms).
+    # Geteilte Runner sind keine Referenz-Hardware, deshalb kein Gate auf jedem Push — aber er
+    # muss regelmäßig laufen, sonst ist er totes Gewicht und die NFRs faktisch ungeprüft.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run load benchmark
+        env:
+          MCPMCP_RUN_BENCHMARK: "1"
+        run: dotnet test tests/McpMcp.Integration.Tests --configuration Release --filter "FullyQualifiedName~PerformanceBenchmarkTests" --logger "console;verbosity=detailed"
 
   docker:
     runs-on: ubuntu-latest
@@ -48,6 +111,20 @@ jobs:
             echo "::error::Image ${MB} MB überschreitet die 300-MB-Grenze (WP7-DoD)."
             exit 1
           fi
+
+      # NFR-05 verlangt linux/amd64 UND linux/arm64. Ohne echten Build ist das eine Behauptung:
+      # der arm64-Zweig kann an nativen Abhängigkeiten (z.B. SQLitePCLRaw) scheitern, ohne dass
+      # es auf amd64 auffällt. Nur bauen, nicht laden — Ausführen bräuchte einen arm64-Runner.
+      - name: Set up QEMU + buildx (für arm64)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify linux/arm64 image builds
+        run: docker buildx build --platform linux/arm64 -t mcpmcp:ci-arm64 .
+
+      - name: Compose-Beispiele sind gültig (SQLite-Default und Postgres-Override)
+        run: |
+          docker compose -f docker-compose.yml config > /dev/null
+          docker compose -f docker-compose.yml -f docker-compose.postgres.yml config > /dev/null
 
       - name: Smoke-test container starts and answers /healthz
         run: |

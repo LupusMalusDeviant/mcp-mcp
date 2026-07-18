@@ -103,7 +103,9 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     {
         var id = await _supervisor.AddAsync(TestData.StdioConfig(enabled: false), CancellationToken.None);
 
-        await Task.Delay(100);
+        // Kein Wanduhr-Warten: ein deaktivierter Server startet gar keinen Verbindungs-Loop,
+        // die Aussage ist also nicht "noch nicht verbunden", sondern "verbindet nie".
+        await TestData.StaysFalseAsync(() => _connector.ConnectCalls > 0, because: "deaktiviert heißt: kein Connect");
 
         _supervisor.GetStatus(id)!.State.Should().Be(UpstreamState.Stopped);
         _connector.ConnectCalls.Should().Be(0);
@@ -192,6 +194,56 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Single_ping_failure_degrades_without_dropping_the_connection()
+    {
+        // FR-08 verlangt Degraded als eigenen Zustand. Vorher sprang ein Ping-Fehler direkt auf
+        // Failed und riss die Verbindung mit — eine Netzdelle kostete alle In-Flight-Calls.
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
+        var connection = _connector.Connections[0];
+
+        connection.FailPing = true;
+        await TestData.WaitUntilAdvancingAsync(
+            _time,
+            () => _supervisor.GetStatus(id)?.State == UpstreamState.Degraded,
+            because: "der erste Ping-Fehler liegt in der Toleranz und wird als Degraded sichtbar");
+
+        // GetConnection liefert die guarded Hülle, nicht die Fake-Instanz — entscheidend ist,
+        // dass überhaupt geroutet wird und die darunterliegende Verbindung lebt.
+        _supervisor.GetConnection(id).Should().NotBeNull("in Degraded wird weiter geroutet");
+        connection.DisposeCount.Should().Be(0, "die Verbindung darf für einen einzelnen Aussetzer nicht sterben");
+        _supervisor.GetStatus(id)!.LastError.Should().Contain("Health-Ping");
+
+        // Erholt sich der Upstream, geht der Zustand ohne Neuverbindung zurück auf Healthy.
+        connection.FailPing = false;
+        await TestData.WaitUntilAdvancingAsync(
+            _time,
+            () => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy,
+            because: "ein erfolgreicher Ping hebt Degraded wieder auf");
+
+        _connector.Connections.Should().HaveCount(1, "es gab keinen Neustart");
+        _audit.Events.Should().Contain(
+            e => e.Kind == AuditEventKind.ServerLifecycle && e.Detail!.Contains(nameof(UpstreamState.Degraded)),
+            "auch der Zwischenzustand gehört ins Audit (FR-22)");
+    }
+
+    [Fact]
+    public async Task Repeated_ping_failures_escalate_from_degraded_to_failed()
+    {
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
+
+        _connector.Connections[0].FailPing = true;
+
+        // Bleibt der Ping weg, muss die Toleranz aufgebraucht werden und der Restart greifen —
+        // Degraded darf kein Zustand sein, in dem ein toter Server ewig hängen bleibt.
+        await TestData.WaitUntilAdvancingAsync(
+            _time,
+            () => Events.Any(e => e.Server == id && e.State == UpstreamState.Failed),
+            because: "nach der Toleranz eskaliert Degraded auf Failed");
+    }
+
+    [Fact]
     public async Task Remove_disposes_connection_clears_entry_and_history()
     {
         var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
@@ -219,8 +271,11 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
         await TestData.WaitUntilAsync(() => connection.InFlightCount == 1);
 
         var remove = _supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromSeconds(5)), CancellationToken.None);
-        await Task.Delay(100);
-        remove.IsCompleted.Should().BeFalse("Drain wartet auf den laufenden Call");
+
+        // Die Gnadenfrist hängt an der Fake-Uhr, die hier nicht vorgestellt wird — Remove kann
+        // also nur durch das Call-Ende fertig werden, und das steckt im Gate.
+        await TestData.StaysFalseAsync(() => remove.IsCompleted, because: "Drain wartet auf den laufenden Call");
+        _connector.Connections[0].DisposeCount.Should().Be(0, "während des Drains lebt die Verbindung weiter");
 
         gate.TrySetResult(TestData.EmptySchema());
         await call;

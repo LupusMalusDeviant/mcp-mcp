@@ -44,10 +44,19 @@ public sealed record AssetContent(
 
 /// <summary>
 /// Zentrale Verwaltung versionierter Text-Assets (Skills/Prompts/Instructions, FR-40).
-/// Auslieferung an Agenten erfolgt MCP-nativ als Prompts/Resources über den Katalog; List ist RBAC-gefiltert.
+/// Auslieferung an Agenten erfolgt MCP-nativ als Prompts/Resources über den Katalog.
 /// </summary>
 public interface IAssetStore
 {
+    /// <summary>
+    /// Alle Assets in ihrer neuesten Version.
+    ///
+    /// <para><b>Keine RBAC-Filterung.</b> <paramref name="identity"/> wird bewusst nicht ausgewertet:
+    /// Assets sind zentrale Instruktionstexte, für jede authentifizierte Identität sichtbar, und
+    /// eröffnen keinen Zugriff auf Fremdsysteme — per-Asset-RBAC ist nicht Teil von FR-40.
+    /// Der Parameter bleibt im Vertrag, damit eine spätere Einschränkung keine Signaturänderung
+    /// braucht. Wer hier Schutz annimmt, irrt: <b>keine Secrets in Assets ablegen.</b></para>
+    /// </summary>
     Task<IReadOnlyList<AssetInfo>> ListAsync(IdentityId identity, CancellationToken ct);
 
     Task<AssetContent> GetAsync(AssetId id, AssetVersion? version, CancellationToken ct);

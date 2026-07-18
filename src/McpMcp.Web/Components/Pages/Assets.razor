@@ -6,7 +6,11 @@
 @inject AuthenticationStateProvider AuthState
 
 <h1>Skills / Assets</h1>
-<p class="muted">Zentral verwaltete, versionierte Text-Assets (Skills/Prompts/Instructions, FR-40). Auslieferung an Agenten als MCP-Prompt/Resource folgt.</p>
+<p class="muted">
+    Zentral verwaltete, versionierte Text-Assets (Skills/Prompts/Instructions, FR-40).
+    Agenten erhalten sie als MCP-Prompt <span class="mono">assets__&lt;name&gt;</span> und als Resource
+    <span class="mono">mcpmcp://assets/&lt;name&gt;</span> — immer in der neuesten Version.
+</p>
 
 <div class="card">
     @if (_assets.Count == 0)
