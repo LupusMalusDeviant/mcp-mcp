@@ -50,15 +50,16 @@ public sealed partial class DatabaseInitializer
         var history = db.GetService<IHistoryRepository>();
         var creator = db.GetService<IRelationalDatabaseCreator>();
 
-        var historyExists = await history.ExistsAsync(ct).ConfigureAwait(false);
+        // Reihenfolge ist wichtig: Historie und Tabellen dürfen erst abgefragt werden, wenn die
+        // Datenbank überhaupt existiert — sonst wirft/irrt der Provider (Npgsql legt keine DB implizit an).
         var outcome = DatabaseInitOutcome.Migrated;
-
-        if (!historyExists)
+        if (!await creator.ExistsAsync(ct).ConfigureAwait(false))
         {
-            var databaseExists = await creator.ExistsAsync(ct).ConfigureAwait(false);
-            var hasTables = databaseExists && await creator.HasTablesAsync(ct).ConfigureAwait(false);
-
-            if (hasTables)
+            outcome = DatabaseInitOutcome.CreatedFromMigrations;
+        }
+        else if (!await history.ExistsAsync(ct).ConfigureAwait(false))
+        {
+            if (await creator.HasTablesAsync(ct).ConfigureAwait(false))
             {
                 await StampBaselineAsync(db, history, ct).ConfigureAwait(false);
                 outcome = DatabaseInitOutcome.BaselinedLegacySchema;

@@ -1,5 +1,6 @@
 using McpMcp.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -32,12 +33,23 @@ public sealed class PostgresPersistenceTests : PersistenceTestsBase
         }
     }
 
-    /// <summary>Legt für Migrations-/Upgrade-Tests eine zusätzliche, leere Datenbank im selben Container an.</summary>
+    /// <summary>
+    /// Legt für Migrations-/Upgrade-Tests eine zusätzliche, garantiert leere Datenbank im selben
+    /// Container an. Bewusst direkt über Npgsql statt ExecScriptAsync: CREATE DATABASE darf nicht in
+    /// einer Transaktion laufen, und ein fehlgeschlagenes Skript bliebe hier sonst unbemerkt.
+    /// </summary>
     protected override async Task<DbContextOptions<McpMcpDbContext>> CreateFreshOptionsAsync(string name)
     {
         var dbName = $"mcpmcp_{name}_{Guid.NewGuid():N}"[..40].ToLowerInvariant();
-        await _container!.ExecScriptAsync($"CREATE DATABASE {dbName};");
-        var connectionString = new Npgsql.NpgsqlConnectionStringBuilder(_container.GetConnectionString())
+
+        await using (var admin = new NpgsqlConnection(_container!.GetConnectionString()))
+        {
+            await admin.OpenAsync();
+            await using var cmd = new NpgsqlCommand($"CREATE DATABASE \"{dbName}\"", admin);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var connectionString = new NpgsqlConnectionStringBuilder(_container.GetConnectionString())
         {
             Database = dbName,
         }.ConnectionString;

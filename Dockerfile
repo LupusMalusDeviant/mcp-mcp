@@ -10,6 +10,8 @@ COPY src/McpMcp.Abstractions/McpMcp.Abstractions.csproj src/McpMcp.Abstractions/
 COPY src/McpMcp.Core/McpMcp.Core.csproj src/McpMcp.Core/
 COPY src/McpMcp.Upstream/McpMcp.Upstream.csproj src/McpMcp.Upstream/
 COPY src/McpMcp.Persistence/McpMcp.Persistence.csproj src/McpMcp.Persistence/
+COPY src/McpMcp.Persistence.Migrations.Sqlite/McpMcp.Persistence.Migrations.Sqlite.csproj src/McpMcp.Persistence.Migrations.Sqlite/
+COPY src/McpMcp.Persistence.Migrations.Postgres/McpMcp.Persistence.Migrations.Postgres.csproj src/McpMcp.Persistence.Migrations.Postgres/
 COPY src/McpMcp.Web/McpMcp.Web.csproj src/McpMcp.Web/
 COPY src/McpMcp.Server/McpMcp.Server.csproj src/McpMcp.Server/
 RUN dotnet restore src/McpMcp.Server/McpMcp.Server.csproj
