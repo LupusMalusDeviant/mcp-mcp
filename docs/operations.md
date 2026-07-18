@@ -35,6 +35,11 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `MCPMCP_AUDIT_DEBUG_PAYLOADS` | *(aus)* | `1`/`true` schaltet den Debug-Modus des Audits ein (siehe [Audit-Debug-Modus](#audit-debug-modus)) |
 | `MCPMCP_AUDIT_RETENTION_DAYS` | `30` | Aufbewahrung der Audit-Ereignisse in Tagen; ältere werden täglich gelöscht (FR-25) |
 
+Für Upstream-Server, die noch kein Streamable HTTP sprechen, fällt der Gateway automatisch auf
+den abgelösten HTTP+SSE-Transport zurück; abschaltbar je Server über den Schalter im Anlege-Formular
+([ADR-0009](adr/0009-sse-legacy-transport.md)). Als **Server** spricht der Gateway ausschließlich
+Streamable HTTP — Agenten, die nur SSE können, lassen sich nicht anbinden.
+
 Logs werden außerhalb von `Development` als **JSON** auf stdout geschrieben (NFR-07), damit
 Container-Logs ohne Zusatzkonfiguration von einem Aggregator geparst werden können. Lokal bleibt
 es beim lesbaren Textformat.

@@ -140,6 +140,10 @@
         <input @bind="_httpUrl" placeholder="https://host/mcp" />
         <label>Header (KEY=VALUE pro Zeile)</label>
         <textarea class="mono" rows="2" @bind="_headers" placeholder="Authorization=Bearer ..."></textarea>
+        <label title="HTTP+SSE ist im MCP-Standard durch Streamable HTTP abgelöst und wird künftig entfernt.">
+            <input type="checkbox" @bind="_allowLegacySse" style="width:auto" />
+            Rückfall auf HTTP+SSE erlauben, wenn der Server kein Streamable HTTP spricht (FR-02)
+        </label>
     }
     else
     {
@@ -180,6 +184,7 @@
     private UpstreamTransportKind _kind = UpstreamTransportKind.Stdio;
     private string _slug = "", _displayName = "", _command = "", _args = "", _env = "";
     private string _httpUrl = "", _headers = "";
+    private bool _allowLegacySse = true;
     private string _specUrl = "", _baseUrl = "", _credential = "", _apiKeyHeader = "X-Api-Key";
     private OpenApiAuthKind _openApiAuth = OpenApiAuthKind.None;
     private bool _busy, _ok;
@@ -213,7 +218,8 @@
                         ParseKeyValues(_env))),
                 UpstreamTransportKind.StreamableHttp => new UpstreamServerConfig(
                     _slug.Trim(), Display(), _kind, true,
-                    Http: new HttpTransportOptions(new Uri(_httpUrl.Trim()), ParseKeyValues(_headers))),
+                    Http: new HttpTransportOptions(
+                        new Uri(_httpUrl.Trim()), ParseKeyValues(_headers), _allowLegacySse)),
                 _ => new UpstreamServerConfig(
                     _slug.Trim(), Display(), _kind, true,
                     OpenApi: new OpenApiTransportOptions(

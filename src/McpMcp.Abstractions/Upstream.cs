@@ -34,7 +34,13 @@ public sealed record StdioTransportOptions(
 
 public sealed record HttpTransportOptions(
     Uri Endpoint,
-    IReadOnlyDictionary<string, string>? Headers = null);
+    IReadOnlyDictionary<string, string>? Headers = null,
+    /// <summary>
+    /// Erlaubt den Rückfall auf den abgelösten HTTP+SSE-Transport, wenn der Upstream kein
+    /// Streamable HTTP spricht (FR-02). Default an: genau diese Transport-Heterogenität
+    /// wegzukapseln ist Aufgabe eines Gateways. Abschaltbar, sobald SSE aus dem Standard fällt.
+    /// </summary>
+    bool AllowLegacySse = true);
 
 /// <summary>
 /// OpenAPI-Quelle als virtueller Upstream (FR-19). <see cref="Credential"/> liegt im Config-Blob,

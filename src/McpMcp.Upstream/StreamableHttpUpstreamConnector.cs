@@ -33,6 +33,12 @@ public sealed class StreamableHttpUpstreamConnector : IUpstreamConnector
             Name = config.Slug,
             Endpoint = options.Endpoint,
             AdditionalHeaders = headers,
+            // FR-02: explizit gesetzt statt auf den SDK-Default zu vertrauen — AutoDetect probiert
+            // Streamable HTTP und fällt auf HTTP+SSE zurück. Ein SDK-Upgrade darf das nicht
+            // stillschweigend ändern; der Default ist zusätzlich per Test festgenagelt.
+            TransportMode = options.AllowLegacySse
+                ? HttpTransportMode.AutoDetect
+                : HttpTransportMode.StreamableHttp,
         });
 
         var client = await McpClient.CreateAsync(transport, cancellationToken: ct).ConfigureAwait(false);
