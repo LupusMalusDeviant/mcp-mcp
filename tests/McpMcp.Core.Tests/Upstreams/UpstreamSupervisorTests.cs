@@ -13,6 +13,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     private readonly InMemoryUpstreamConfigStore _store;
     private readonly UpstreamSupervisor _supervisor;
     private readonly List<UpstreamChangedEventArgs> _events = [];
+    private readonly Invocation.FakeAuditSink _audit = new();
 
     private static readonly RestartPolicy TestPolicy =
         new(MaxRetries: 2, InitialBackoff: TimeSpan.FromSeconds(1), BackoffMultiplier: 2.0, MaxBackoff: TimeSpan.FromSeconds(10));
@@ -31,7 +32,9 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
                 DefaultDrainGrace = TimeSpan.FromSeconds(5),
                 DefaultRestartPolicy = TestPolicy,
             },
-            _time);
+            _time,
+            logger: null,
+            audit: _audit);
         _supervisor.Changed += (_, e) =>
         {
             lock (_events)
@@ -66,6 +69,33 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
         _supervisor.GetConnection(id).Should().NotBeNull();
         Events.Should().Contain(e => e.Kind == UpstreamChangeKind.Added && e.Server == id);
         Events.Should().Contain(e => e.Kind == UpstreamChangeKind.InventoryChanged && e.Server == id);
+    }
+
+    [Fact]
+    public async Task State_changes_are_written_to_the_audit_log()
+    {
+        // FR-22: Systemereignisse müssen im Audit stehen, nicht nur im ILogger — ein Ausfall
+        // ist sonst nachträglich nicht nachvollziehbar.
+        var id = await _supervisor.AddAsync(TestData.StdioConfig("lifecycle"), CancellationToken.None);
+        await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
+
+        var lifecycle = _audit.Events.Where(e => e.Kind == AuditEventKind.ServerLifecycle).ToList();
+        lifecycle.Should().NotBeEmpty();
+        lifecycle.Should().OnlyContain(e => e.Server == id && e.Caller == null && e.Origin == CallOrigin.System);
+        lifecycle.Should().Contain(e => e.Detail!.Contains("lifecycle") && e.Detail.Contains(nameof(UpstreamState.Healthy)));
+    }
+
+    [Fact]
+    public async Task Failed_state_records_the_error_in_the_audit_detail()
+    {
+        _connector.EnqueueConnectFailure("Upstream nicht erreichbar (Test)");
+
+        var id = await _supervisor.AddAsync(TestData.StdioConfig("kaputt"), CancellationToken.None);
+        await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Failed);
+
+        _audit.Events.Should().Contain(
+            e => e.Kind == AuditEventKind.ServerLifecycle && e.Detail!.Contains(nameof(UpstreamState.Failed)),
+            "der Fehlertext gehört zum Systemereignis dazu");
     }
 
     [Fact]

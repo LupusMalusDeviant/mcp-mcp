@@ -61,12 +61,16 @@ public sealed class AuthorizationService : IAuthorizationService
         return visible;
     }
 
-    private CompiledPermissions? GetSnapshot(IdentityId identity)
+    public string? DescribeCaller(IdentityId identity) => GetCached(identity)?.CallerDescription;
+
+    private CompiledPermissions? GetSnapshot(IdentityId identity) => GetCached(identity)?.Permissions;
+
+    private CachedSnapshot? GetCached(IdentityId identity)
     {
         var version = _directory.Version;
         if (_cache.TryGetValue(identity, out var cached) && cached.Version == version)
         {
-            return cached.Permissions;
+            return cached;
         }
 
         var compiled = Compile(identity);
@@ -76,11 +80,13 @@ public sealed class AuthorizationService : IAuthorizationService
             return null;
         }
 
-        _cache[identity] = new CachedSnapshot(version, compiled);
-        return compiled;
+        // Mit der VOR dem Kompilieren gelesenen Version stempeln: ändert sich das Directory währenddessen,
+        // gilt der Eintrag als veraltet und wird neu gebaut — nie umgekehrt.
+        var stamped = compiled with { Version = version };
+        return _cache[identity] = stamped;
     }
 
-    private CompiledPermissions? Compile(IdentityId identityId)
+    private CachedSnapshot? Compile(IdentityId identityId)
     {
         var identity = _directory.GetIdentity(identityId);
         if (identity is null)
@@ -88,6 +94,7 @@ public sealed class AuthorizationService : IAuthorizationService
             return null;
         }
 
+        var roleNames = new List<string>();
         var global = new HashSet<ToolAction>();
         var perServer = new Dictionary<ServerId, HashSet<ToolAction>>();
         var perTool = new Dictionary<NamespacedToolName, HashSet<ToolAction>>();
@@ -100,6 +107,7 @@ public sealed class AuthorizationService : IAuthorizationService
                 continue; // verwaiste Rollen-Referenz gewährt nichts (Default-Deny)
             }
 
+            roleNames.Add(role.Name);
             foreach (var grant in role.Grants)
             {
                 var target = grant.Scope switch
@@ -119,10 +127,17 @@ public sealed class AuthorizationService : IAuthorizationService
             }
         }
 
-        return new CompiledPermissions(global, perServer, perTool);
+        // Rollenlose Identitäten kommen vor (registriert, aber ohne Grant) — dann trägt das Audit
+        // wenigstens den Namen, statt ein leeres Feld zu zeigen.
+        var description = roleNames.Count > 0
+            ? $"{identity.Name} [{string.Join(", ", roleNames)}]"
+            : $"{identity.Name} [ohne Rolle]";
+
+        return new CachedSnapshot(
+            Version: 0, new CompiledPermissions(global, perServer, perTool), description);
     }
 
-    private sealed record CachedSnapshot(long Version, CompiledPermissions Permissions);
+    private sealed record CachedSnapshot(long Version, CompiledPermissions Permissions, string CallerDescription);
 
     private sealed class CompiledPermissions
     {

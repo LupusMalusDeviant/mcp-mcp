@@ -30,6 +30,12 @@ Der Gateway ist der zentrale Vertrauensanker (ADR-0001): Er terminiert jeden Cal
 | 5 | Header-Parameter-Injection (CR/LF) im OpenAPI-Connector | CR/LF-Werte werden abgelehnt |
 | 6 | `/readyz` gab Upstream-Topologie anonym preis | nur noch aggregierte Zahlen |
 
+## Nach v1.0 gefunden und behoben
+
+| # | Finding | Fix |
+|---|---|---|
+| 7 | **Klartext-Secrets im Audit-Log über den Meta-Tool-Pfad.** `MetaToolService` schrieb die Argumente ungefiltert; bei `invoke_tool` enthält `args.arguments` die kompletten Ziel-Argumente. Ein Call über den Lazy-Pfad persistierte damit Passwörter/Tokens im Klartext, während derselbe Call über `tools/call` korrekt maskiert wurde. Gefunden bei einem unabhängigen Abgleich aller Muss-FRs gegen den Code, nicht durch den ursprünglichen Security-Audit. | Der Meta-Pfad läuft durch denselben `IRedactionService`; Regressionstest hält die Invariante. Betroffen sind Bestands-Logs aus v1.0/v1.1 — wer den Lazy-Pfad genutzt hat, sollte die Audit-Tabelle prüfen und ggf. betroffene Zeilen löschen sowie die dort sichtbar gewordenen Credentials rotieren. |
+
 ## Akzeptierte / dokumentierte Restrisiken
 
 - **stdio-Upstreams ohne Sandbox** (ADR-0005): Admin-kontrollierter Command/Args/Env läuft ungesandboxt als Kindprozess mit Gateway-Rechten. Trust-Boundary: **nur vertrauenswürdige Server anschließen**; nur Admins dürfen Upstreams anlegen. Container-Isolation pro Upstream ist v2-Kandidat.

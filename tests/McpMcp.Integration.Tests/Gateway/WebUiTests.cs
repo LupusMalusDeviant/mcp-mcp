@@ -64,7 +64,7 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
         dashboard.StatusCode.Should().Be(HttpStatusCode.OK, "mit Cookie ist das Dashboard erreichbar");
 
         await IntegrationSupport.WaitUntilAsync(() =>
-            _gw.AuditQuery.QueryAsync(new AuditFilter(Tool: $"ui-login:{name}", Kind: AuditEventKind.Authentication), CancellationToken.None)
+            _gw.AuditQuery.QueryAsync(new AuditFilter(ToolPrefix: $"ui-login:{name}", Kind: AuditEventKind.Authentication), CancellationToken.None)
                 .GetAwaiter().GetResult().TotalCount >= 1,
             because: "erfolgreiche UI-Logins werden auditiert");
     }
@@ -127,7 +127,7 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
 
         // 4. Im Log sichtbar (Logs.razor → IAuditQuery), mit Origin=Ui
         await IntegrationSupport.WaitUntilAsync(() =>
-            _gw.AuditQuery.QueryAsync(new AuditFilter(Tool: "ui-ref__echo"), CancellationToken.None)
+            _gw.AuditQuery.QueryAsync(new AuditFilter(ToolPrefix: "ui-ref__echo"), CancellationToken.None)
                 .GetAwaiter().GetResult().Items.Any(e => e.Origin == CallOrigin.Ui && e.Status == InvocationStatus.Success),
             because: "WP6-DoD: der UI-Testaufruf erscheint mit Origin=Ui im Audit-Log");
 

@@ -8,6 +8,9 @@ public enum CallOrigin
     Mcp = 0,
     Rest = 1,
     Ui = 2,
+
+    /// <summary>Kein Aufrufer — vom Gateway selbst ausgelöst (Systemereignisse, FR-22). Wert am Ende: die Zahlen liegen persistiert in der DB.</summary>
+    System = 3,
 }
 
 public enum InvocationStatus

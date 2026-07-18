@@ -87,12 +87,16 @@ internal sealed class InvokerTestWorld
         Supervisor.SetConnection(Server, Connection);
         Catalog = new ToolCatalog(Supervisor, Authorization, Directory);
         Invoker = new ToolInvoker(Authorization, RateLimiter, Catalog, Supervisor, Audit, Redaction, Time);
-        MetaTools = new MetaToolService(Catalog, Authorization, Invoker, Audit, Time);
+        MetaTools = new MetaToolService(Catalog, Authorization, Invoker, Audit, Redaction, Time);
     }
 
     public NamespacedToolName Echo => NamespacedToolName.Create(Slug, "echo");
 
     public NamespacedToolName Free => NamespacedToolName.Create(Slug, "free");
+
+    /// <summary>Zweiter Invoker auf derselben Welt — für Schalter, die im Konstruktor festgelegt werden.</summary>
+    public ToolInvoker WithAuditOptions(AuditOptions options)
+        => new(Authorization, RateLimiter, Catalog, Supervisor, Audit, Redaction, Time, logger: null, options);
 
     public IdentityId RegisterAgent(params Grant[] grants)
     {

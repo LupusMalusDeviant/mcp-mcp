@@ -97,7 +97,8 @@ builder.Services.AddSingleton<UpstreamSupervisor>(sp => new UpstreamSupervisor(
     sp.GetRequiredService<IUpstreamConfigStore>(),
     sp.GetRequiredService<SupervisorOptions>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILogger<UpstreamSupervisor>>()));
+    sp.GetRequiredService<ILogger<UpstreamSupervisor>>(),
+    sp.GetRequiredService<IAuditSink>()));
 builder.Services.AddSingleton<IUpstreamSupervisor>(sp => sp.GetRequiredService<UpstreamSupervisor>());
 builder.Services.AddSingleton<ToolDescriptionOverrideStore>();
 builder.Services.AddSingleton<IToolDescriptionOverrides>(sp => sp.GetRequiredService<ToolDescriptionOverrideStore>());
@@ -116,14 +117,21 @@ builder.Services.AddSingleton<IAuditSink>(sp => sp.GetRequiredService<ChannelAud
 builder.Services.AddSingleton<AuditBatchWriter>();
 builder.Services.AddSingleton<IAuditQuery, EfAuditQuery>();
 builder.Services.AddSingleton<AuditRetentionJob>();
-builder.Services.AddSingleton<RedactionService>();
+builder.Services.AddSingleton<RedactionRuleStore>();
+builder.Services.AddSingleton<IRedactionRules>(sp => sp.GetRequiredService<RedactionRuleStore>());
+builder.Services.AddSingleton<RedactionService>(sp => new RedactionService(sp.GetRequiredService<IRedactionRules>()));
 builder.Services.AddSingleton<IRedactionService>(sp => sp.GetRequiredService<RedactionService>());
+
+// FR-24: Ergebnis-Payloads im Audit sind ausdrücklich zu aktivieren, nie Default (NFR-04).
+builder.Services.AddSingleton(new AuditOptions(
+    CaptureResponsePayloads: Environment.GetEnvironmentVariable("MCPMCP_AUDIT_DEBUG_PAYLOADS") is "1" or "true"));
 builder.Services.AddSingleton<IToolInvoker, ToolInvoker>();
 builder.Services.AddSingleton<MetaToolService>();
 
 // ── MCP-Endpoint (WP4.2) + REST-Fassade (WP5) ────────────────────────────────
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<McpSessionRegistry>();
+builder.Services.AddSingleton<IActiveSessionSource>(sp => sp.GetRequiredService<McpSessionRegistry>());
 builder.Services.AddSingleton<OpenApiDocumentGenerator>();
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));

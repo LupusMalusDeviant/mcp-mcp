@@ -230,3 +230,16 @@ public interface IUpstreamSupervisor
 
     Task RollbackAsync(ServerId id, ConfigVersionId version, CancellationToken ct);
 }
+
+/// <summary>
+/// Zählstand der aktiven MCP-Sessions fürs Dashboard (FR-33). Eigener Vertrag, weil die
+/// Session-Verwaltung im Server-Host liegt, die UI aber nur nach unten auf Abstractions zeigt (ADR-0004).
+/// </summary>
+public interface IActiveSessionSource
+{
+    /// <summary>Anzahl offener MCP-Sessions (eine Agenten-Instanz kann mehrere halten).</summary>
+    int ActiveSessions { get; }
+
+    /// <summary>Anzahl verschiedener Identitäten mit mindestens einer offenen Session.</summary>
+    int ActiveAgents { get; }
+}

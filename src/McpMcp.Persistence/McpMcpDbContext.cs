@@ -32,6 +32,8 @@ public sealed class McpMcpDbContext : DbContext
 
     public DbSet<ToolDescriptionOverrideRow> ToolDescriptionOverrides => Set<ToolDescriptionOverrideRow>();
 
+    public DbSet<RedactionRuleRow> RedactionRules => Set<RedactionRuleRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ConfigVersionRow>(e =>
@@ -100,6 +102,13 @@ public sealed class McpMcpDbContext : DbContext
             e.HasKey(r => r.Tool);
             e.Property(r => r.Tool).HasMaxLength(300);
             e.Property(r => r.Description).IsRequired();
+        });
+
+        modelBuilder.Entity<RedactionRuleRow>(e =>
+        {
+            e.HasKey(r => r.Tool);
+            e.Property(r => r.Tool).HasMaxLength(300);
+            e.Property(r => r.Patterns).IsRequired();
         });
 
         // Provider-neutral: Zeitstempel als UTC-Ticks (bigint). SQLite kann DateTimeOffset weder
@@ -225,6 +234,15 @@ public sealed class AuditEventRow
     public long? ResponseBytes { get; set; }
 
     public double? DurationMs { get; set; }
+
+    /// <summary>Profil/Rollen des Aufrufers im Klartext (FR-21).</summary>
+    public string? CallerRoles { get; set; }
+
+    /// <summary>Klartext bei Systemereignissen, z.B. Upstream-Zustandswechsel (FR-22).</summary>
+    public string? Detail { get; set; }
+
+    /// <summary>Maskierter Ergebnis-Payload — nur im Debug-Modus befüllt (FR-24).</summary>
+    public string? RedactedResponseJson { get; set; }
 }
 
 public sealed class UiUserRow
@@ -247,6 +265,14 @@ public sealed class ToolDescriptionOverrideRow
     public string Tool { get; set; } = string.Empty;
 
     public string Description { get; set; } = string.Empty;
+}
+
+/// <summary>Zusätzliche Redaction-Muster eines Tools (FR-24), kommasepariert.</summary>
+public sealed class RedactionRuleRow
+{
+    public string Tool { get; set; } = string.Empty;
+
+    public string Patterns { get; set; } = string.Empty;
 }
 
 /// <summary>Versioniertes Text-Asset (Skill/Prompt/Instruction, FR-40, WP6.4). Append-only pro Version.</summary>

@@ -32,6 +32,27 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `MCPMCP_KEYRING_CERT_PATH` | *(nicht gesetzt)* | PFX-Zertifikat zum Verschlüsseln des Key-Rings (siehe [Key-Ring schützen](#key-ring-schützen)) |
 | `MCPMCP_KEYRING_CERT_PASSWORD` | *(nicht gesetzt)* | Passwort des PFX |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(nicht gesetzt)* | Ziel für den Metriken-Export (siehe [Metriken](#metriken)) |
+| `MCPMCP_AUDIT_DEBUG_PAYLOADS` | *(aus)* | `1`/`true` schaltet den Debug-Modus des Audits ein (siehe [Audit-Debug-Modus](#audit-debug-modus)) |
+
+## Audit-Debug-Modus
+
+Standardmäßig schreibt das Audit **keine** Ergebnis-Payloads mit — nur deren Größe in Bytes.
+Zur Fehlersuche lässt sich das umschalten:
+
+```
+MCPMCP_AUDIT_DEBUG_PAYLOADS=1
+```
+
+Dann landet der vollständige Antwort-Payload im Audit-Log, **maskiert** durch dieselbe Redaction
+wie die Argumente. Zwei Dinge dazu:
+
+- Der Schalter ist als Debug-Hilfe gedacht, nicht für Dauerbetrieb: Antworten können groß sein und
+  die Audit-Tabelle schnell aufblähen. Die Retention greift zwar, aber der Plattenbedarf steigt spürbar.
+- Redaction maskiert bekannte Secret-Feldnamen. Trägt ein Upstream Geheimnisse in *unbenannten*
+  Strukturen (Freitext, Base64-Blobs), hilft das nicht — in dem Fall den Schalter aus lassen.
+
+Zusätzliche Muster pro Tool lassen sich in der Web-UI unter **Tools → \[Tool wählen\]** als
+Admin pflegen; sie gelten zusätzlich zu den globalen Mustern (`password`, `token`, `secret`, `key` …).
 
 ## Agent anbinden
 

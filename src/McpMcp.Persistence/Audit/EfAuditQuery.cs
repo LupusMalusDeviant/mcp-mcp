@@ -43,9 +43,11 @@ public sealed class EfAuditQuery : IAuditQuery
             query = query.Where(r => r.ServerId == server.Value);
         }
 
-        if (filter.Tool is { } tool)
+        if (filter.ToolPrefix is { } tool)
         {
-            query = query.Where(r => r.Tool == tool);
+            // Präfix statt Gleichheit: die UI sucht nach Server-Namespaces wie "github__",
+            // ein exakter Vergleich hätte dort immer null Treffer geliefert.
+            query = query.Where(r => r.Tool != null && r.Tool.StartsWith(tool));
         }
 
         if (filter.Status is { } status)
@@ -56,6 +58,11 @@ public sealed class EfAuditQuery : IAuditQuery
         if (filter.Kind is { } kind)
         {
             query = query.Where(r => r.Kind == (int)kind);
+        }
+
+        if (filter.Origin is { } origin)
+        {
+            query = query.Where(r => r.Origin == (int)origin);
         }
 
         var total = await query.LongCountAsync(ct).ConfigureAwait(false);

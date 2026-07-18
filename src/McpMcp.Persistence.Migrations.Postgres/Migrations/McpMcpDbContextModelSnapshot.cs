@@ -96,6 +96,12 @@ namespace McpMcp.Persistence.Migrations.Postgres.Migrations
                     b.Property<Guid?>("CallerId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("CallerRoles")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Detail")
+                        .HasColumnType("text");
+
                     b.Property<double?>("DurationMs")
                         .HasColumnType("double precision");
 
@@ -106,6 +112,9 @@ namespace McpMcp.Persistence.Migrations.Postgres.Migrations
                         .HasColumnType("integer");
 
                     b.Property<string>("RedactedArgumentsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RedactedResponseJson")
                         .HasColumnType("text");
 
                     b.Property<long?>("RequestBytes")
@@ -208,6 +217,21 @@ namespace McpMcp.Persistence.Migrations.Postgres.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Profiles");
+                });
+
+            modelBuilder.Entity("McpMcp.Persistence.RedactionRuleRow", b =>
+                {
+                    b.Property<string>("Tool")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Patterns")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Tool");
+
+                    b.ToTable("RedactionRules");
                 });
 
             modelBuilder.Entity("McpMcp.Persistence.RoleRow", b =>

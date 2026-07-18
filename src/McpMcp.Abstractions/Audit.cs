@@ -27,7 +27,13 @@ public sealed record AuditEvent(
     JsonElement? RedactedArguments,
     long? RequestBytes,
     long? ResponseBytes,
-    TimeSpan? Duration);
+    TimeSpan? Duration,
+    /// <summary>Profil/Rollen des Aufrufers im Klartext (FR-21); null bei Systemereignissen ohne Aufrufer.</summary>
+    string? CallerRoles = null,
+    /// <summary>Klartext-Beschreibung bei Systemereignissen, z.B. Zustandswechsel eines Upstreams (FR-22).</summary>
+    string? Detail = null,
+    /// <summary>Maskierter Ergebnis-Payload — nur im Debug-Modus gefüllt (FR-24, <see cref="AuditOptions"/>).</summary>
+    JsonElement? RedactedResponse = null);
 
 /// <summary>Filter für die Log-Ansicht/den Export (FR-23).</summary>
 public sealed record AuditFilter(
@@ -35,9 +41,11 @@ public sealed record AuditFilter(
     DateTimeOffset? To = null,
     IdentityId? Caller = null,
     ServerId? Server = null,
-    string? Tool = null,
+    /// <summary>Präfix des namespaced Tool-Namens, z.B. <c>github__</c> — nicht exakter Vergleich.</summary>
+    string? ToolPrefix = null,
     InvocationStatus? Status = null,
     AuditEventKind? Kind = null,
+    CallOrigin? Origin = null,
     int Page = 1,
     int PageSize = 100);
 
@@ -63,3 +71,24 @@ public interface IRedactionService
 {
     JsonElement RedactArguments(NamespacedToolName tool, JsonElement args);
 }
+
+/// <summary>
+/// Pro Tool konfigurierbare, zusätzliche Redaction-Muster (FR-24) — additiv zu den globalen Defaults.
+/// Wird im Hot Path gelesen; Implementierungen halten die Regeln im Speicher.
+/// </summary>
+public interface IRedactionRules
+{
+    IReadOnlyList<string>? GetPatterns(NamespacedToolName tool);
+
+    IReadOnlyDictionary<NamespacedToolName, IReadOnlyList<string>> All { get; }
+
+    /// <summary>Setzt die Muster eines Tools; leer/null entfernt die Regel.</summary>
+    Task SetAsync(NamespacedToolName tool, IReadOnlyList<string>? patterns, CancellationToken ct);
+}
+
+/// <summary>
+/// Betriebsschalter des Audits (FR-24). <see cref="CaptureResponsePayloads"/> ist der ausdrücklich
+/// zu aktivierende Debug-Modus: nur dann werden vollständige — ebenfalls maskierte — Ergebnis-Payloads
+/// persistiert. Default ist aus, weil Ergebnisse beliebig groß und sensibel sein können (NFR-04).
+/// </summary>
+public sealed record AuditOptions(bool CaptureResponsePayloads = false);

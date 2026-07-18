@@ -88,6 +88,21 @@ public class MetaToolServiceTests
     }
 
     [Fact]
+    public async Task Invoke_redacts_target_arguments_in_its_own_audit()
+    {
+        var admin = _w.RegisterAdmin();
+
+        // Fehlschlagende Validierung: der Ziel-Call wird nie auditiert, nur der Meta-Call —
+        // genau der Pfad, auf dem die Argumente früher ungefiltert in die DB gingen.
+        await ExecuteAsync(admin, MetaToolService.InvokeToolName,
+            new { arguments = new { password = "geheim123" } });
+
+        var evt = _w.Audit.Events.Should().ContainSingle().Subject;
+        evt.RedactedArguments!.Value.GetRawText()
+            .Should().NotContain("geheim123", "auch der Meta-Pfad läuft durch die Redaction (NFR-04)");
+    }
+
+    [Fact]
     public void Definitions_expose_three_meta_tools_with_schemas()
     {
         MetaToolService.Definitions.Should().HaveCount(3);

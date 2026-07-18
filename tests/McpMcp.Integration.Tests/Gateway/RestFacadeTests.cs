@@ -87,7 +87,7 @@ public sealed class RestFacadeTests : IClassFixture<GatewayFixture>
         await IntegrationSupport.WaitUntilAsync(() =>
         {
             events = _gw.AuditQuery.QueryAsync(
-                new AuditFilter(Caller: identity, Tool: "parity1__echo"), CancellationToken.None)
+                new AuditFilter(Caller: identity, ToolPrefix: "parity1__echo"), CancellationToken.None)
                 .GetAwaiter().GetResult().Items;
             return events.Count == 2;
         });

@@ -21,6 +21,9 @@ public sealed class RedactionService : IRedactionService
     ];
 
     private readonly ConcurrentDictionary<NamespacedToolName, IReadOnlyList<string>> _toolRules = new();
+    private readonly IRedactionRules? _rules;
+
+    public RedactionService(IRedactionRules? rules = null) => _rules = rules;
 
     /// <summary>Ergänzt tool-spezifische Property-Muster (additiv zu den Defaults).</summary>
     public void SetToolRules(NamespacedToolName tool, IReadOnlyList<string> propertyPatterns)
@@ -36,7 +39,9 @@ public sealed class RedactionService : IRedactionService
             return args; // Skalare/Undefined enthalten keine benannten Secret-Felder
         }
 
-        var extraRules = _toolRules.GetValueOrDefault(tool);
+        // Konfigurierte Regeln aus dem Store haben Vorrang; die In-Memory-Variante bleibt für
+        // Setups ohne Persistenz (und für Tests) bestehen.
+        var extraRules = _rules?.GetPatterns(tool) ?? _toolRules.GetValueOrDefault(tool);
         var node = JsonNode.Parse(args.GetRawText())!;
         RedactNode(node, extraRules);
         return JsonSerializer.SerializeToElement(node);

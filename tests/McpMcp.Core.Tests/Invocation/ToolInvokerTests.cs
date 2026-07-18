@@ -28,6 +28,7 @@ public class ToolInvokerTests
         evt.Caller.Should().Be(admin);
         evt.Server.Should().Be(_w.Server);
         evt.Tool.Should().Be(_w.Echo.Value);
+        evt.CallerRoles.Should().Contain("rolle", "FR-21 verlangt Profil/Rolle des Aufrufers, nicht nur die Id");
     }
 
     [Fact]
@@ -171,6 +172,28 @@ public class ToolInvokerTests
         result.Status.Should().Be(InvocationStatus.Timeout);
         result.ErrorMessage.Should().Contain("abgebrochen");
         _w.Audit.Events.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Response_payloads_are_only_audited_in_debug_mode_and_stay_redacted()
+    {
+        var admin = _w.RegisterAdmin();
+
+        // Default: kein Ergebnis-Payload im Log (FR-24/NFR-04).
+        await _w.Invoker.InvokeAsync(
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+        _w.Audit.Events.Should().ContainSingle().Which.RedactedResponse
+            .Should().BeNull("Ergebnis-Payloads sind ohne ausdrücklichen Debug-Modus tabu");
+
+        var debug = _w.WithAuditOptions(new AuditOptions(CaptureResponsePayloads: true));
+        await debug.InvokeAsync(
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+
+        var evt = _w.Audit.Events[^1];
+        evt.RedactedResponse.Should().NotBeNull("im Debug-Modus wird der Payload mitgeschrieben");
+        evt.RedactedResponse!.Value.GetRawText()
+            .Should().Contain("echo").And.NotContain("geheim-antwort",
+                "auch im Debug-Modus läuft der Payload durch die Redaction");
     }
 
     [Fact]

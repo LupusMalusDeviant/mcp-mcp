@@ -7,13 +7,17 @@ namespace McpMcp.Server;
 
 /// <summary>
 /// Verzeichnis der aktiven MCP-Sessions (FR-39). Quelle für tools/list_changed-Broadcasts (FR-07)
-/// und später fürs Dashboard (FR-33).
+/// und für die Session-Anzeige im Dashboard (FR-33).
 /// </summary>
-public sealed class McpSessionRegistry
+public sealed class McpSessionRegistry : IActiveSessionSource
 {
     private readonly ConcurrentDictionary<McpServer, IdentityId> _sessions = new();
 
     public int Count => _sessions.Count;
+
+    public int ActiveSessions => _sessions.Count;
+
+    public int ActiveAgents => _sessions.Values.Distinct().Count();
 
     public void Register(McpServer server, IdentityId identity) => _sessions[server] = identity;
 

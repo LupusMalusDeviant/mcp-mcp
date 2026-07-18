@@ -260,17 +260,23 @@ internal static class ApiEndpoints
         api.MapGet("/audit", async (
             HttpContext ctx, IAuditQuery query,
             DateTimeOffset? from, DateTimeOffset? to, Guid? caller, Guid? server, string? tool,
-            InvocationStatus? status, AuditEventKind? kind, int page, int pageSize,
+            InvocationStatus? status, AuditEventKind? kind, CallOrigin? origin, int page, int pageSize,
             CancellationToken ct) =>
         {
+            // Benannte Argumente: der Filter wächst mit den Log-Anforderungen, positional würde
+            // ein neues Feld hier stillschweigend die Bedeutung verschieben.
             var result = await query.QueryAsync(
                 new AuditFilter(
-                    from, to,
-                    caller is { } c ? new IdentityId(c) : null,
-                    server is { } s ? new ServerId(s) : null,
-                    tool, status, kind,
-                    page < 1 ? 1 : page,
-                    pageSize < 1 ? 100 : Math.Min(pageSize, 1000)),
+                    From: from,
+                    To: to,
+                    Caller: caller is { } c ? new IdentityId(c) : null,
+                    Server: server is { } s ? new ServerId(s) : null,
+                    ToolPrefix: tool,
+                    Status: status,
+                    Kind: kind,
+                    Origin: origin,
+                    Page: page < 1 ? 1 : page,
+                    PageSize: pageSize < 1 ? 100 : Math.Min(pageSize, 1000)),
                 ct);
             return Results.Ok(result);
         }).AddEndpointFilter(RequireAdminAsync);

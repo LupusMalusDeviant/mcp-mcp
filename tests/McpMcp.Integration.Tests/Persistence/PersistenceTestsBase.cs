@@ -236,6 +236,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
                     Kind = (int)AuditEventKind.ToolCall,
                     Tool = i < 10 ? "srv__a" : "srv__b",
                     Status = (int)(i % 3 == 0 ? InvocationStatus.Denied : InvocationStatus.Success),
+                    CallerRoles = "agent [rolle]",
                 });
             }
 
@@ -251,8 +252,19 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         var denied = await query.QueryAsync(new AuditFilter(Status: InvocationStatus.Denied), CancellationToken.None);
         denied.TotalCount.Should().Be(10);
 
-        var byTool = await query.QueryAsync(new AuditFilter(Tool: "srv__a"), CancellationToken.None);
+        var byTool = await query.QueryAsync(new AuditFilter(ToolPrefix: "srv__a"), CancellationToken.None);
         byTool.TotalCount.Should().Be(10);
+        byTool.Items.Should().OnlyContain(e => e.CallerRoles == "agent [rolle]", "FR-21: Rolle wird mitgelesen");
+
+        // FR-23: die UI sucht nach dem Server-Namespace, nicht nach dem vollen Tool-Namen —
+        // mit exaktem Vergleich hätte das hier 0 statt 30 Treffer ergeben.
+        var byPrefix = await query.QueryAsync(new AuditFilter(ToolPrefix: "srv__"), CancellationToken.None);
+        byPrefix.TotalCount.Should().Be(30);
+
+        var byOrigin = await query.QueryAsync(new AuditFilter(Origin: CallOrigin.Rest), CancellationToken.None);
+        byOrigin.TotalCount.Should().Be(30);
+        (await query.QueryAsync(new AuditFilter(Origin: CallOrigin.Mcp), CancellationToken.None))
+            .TotalCount.Should().Be(0, "der Herkunft-Filter muss auch ausschließen");
 
         var page2 = await query.QueryAsync(new AuditFilter(Page: 2, PageSize: 12), CancellationToken.None);
         page2.Items.Should().HaveCount(12);

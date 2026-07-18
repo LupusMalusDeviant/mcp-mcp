@@ -18,6 +18,7 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
     private readonly SupervisorOptions _options;
     private readonly TimeProvider _time;
     private readonly ILogger<UpstreamSupervisor> _logger;
+    private readonly IAuditSink? _audit;
     private readonly ConcurrentDictionary<ServerId, Entry> _entries = new();
 
     public UpstreamSupervisor(
@@ -25,7 +26,8 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
         IUpstreamConfigStore store,
         SupervisorOptions? options = null,
         TimeProvider? timeProvider = null,
-        ILogger<UpstreamSupervisor>? logger = null)
+        ILogger<UpstreamSupervisor>? logger = null,
+        IAuditSink? audit = null)
     {
         ArgumentNullException.ThrowIfNull(connectors);
         ArgumentNullException.ThrowIfNull(store);
@@ -34,6 +36,7 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
         _options = options ?? new SupervisorOptions();
         _time = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<UpstreamSupervisor>.Instance;
+        _audit = audit;
     }
 
     public event EventHandler<UpstreamChangedEventArgs>? Changed;
@@ -417,10 +420,22 @@ public sealed partial class UpstreamSupervisor : IUpstreamSupervisor, IAsyncDisp
             entry.LastError = error;
         }
 
-        if (changed)
+        if (!changed)
         {
-            Raise(entry, UpstreamChangeKind.StateChanged);
+            return;
         }
+
+        // FR-22: Zustandswechsel eines Upstreams ist ein Systemereignis und gehört ins Audit-Log,
+        // nicht nur in den ILogger — sonst fehlt beim Nachvollziehen eines Ausfalls die Spur.
+        _audit?.Record(new AuditEvent(
+            _time.GetUtcNow(), Caller: null, CallOrigin.System, AuditEventKind.ServerLifecycle,
+            entry.Id, Tool: null, Status: null, RedactedArguments: null,
+            RequestBytes: null, ResponseBytes: null, Duration: null,
+            Detail: error is null
+                ? $"{entry.Config.Slug}: {state}"
+                : $"{entry.Config.Slug}: {state} — {error}"));
+
+        Raise(entry, UpstreamChangeKind.StateChanged);
     }
 
     private void Raise(Entry entry, UpstreamChangeKind kind)

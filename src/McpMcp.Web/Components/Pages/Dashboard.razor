@@ -4,6 +4,7 @@
 @inject IUpstreamSupervisor Supervisor
 @inject IToolCatalog Catalog
 @inject IAuditQuery AuditQuery
+@inject IActiveSessionSource Sessions
 
 <h1>Dashboard</h1>
 <p class="muted">Live-Überblick über Gateway, Upstream-Server und Aufkommen.</p>
@@ -18,6 +19,11 @@
         <div class="stat-label">Aggregierte Tools</div>
         <div class="stat">@_toolCount</div>
         <div class="muted">im Katalog</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">Aktive Sessions</div>
+        <div class="stat">@_sessions</div>
+        <div class="muted">@_agents Agenten verbunden</div>
     </div>
     <div class="card">
         <div class="stat-label">Calls (letzte 24 h)</div>
@@ -60,7 +66,7 @@
 
 @code {
     private IReadOnlyList<UpstreamStatus> _statuses = [];
-    private int _total, _healthy, _toolCount;
+    private int _total, _healthy, _toolCount, _sessions, _agents;
     private long _calls24h, _denied24h;
     private double _errorRate;
     private Timer? _timer;
@@ -81,6 +87,8 @@
         _total = _statuses.Count;
         _healthy = _statuses.Count(s => s.State == UpstreamState.Healthy);
         _toolCount = Catalog.Snapshot.Count(e => e.Kind == CatalogEntryKind.Tool);
+        _sessions = Sessions.ActiveSessions;
+        _agents = Sessions.ActiveAgents;
 
         var since = DateTimeOffset.UtcNow.AddHours(-24);
         _calls24h = (await AuditQuery.QueryAsync(new AuditFilter(From: since, Kind: AuditEventKind.ToolCall, PageSize: 1), CancellationToken.None)).TotalCount;

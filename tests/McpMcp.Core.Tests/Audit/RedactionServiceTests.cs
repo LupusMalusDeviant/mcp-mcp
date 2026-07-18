@@ -86,6 +86,38 @@ public class RedactionServiceTests
             .Should().Be("1234", "anderes Tool bleibt bei den Default-Regeln");
     }
 
+    [Fact]
+    public void Configured_rules_from_the_store_are_applied()
+    {
+        // FR-24 verlangt konfigurierbare Regeln — bis dahin war SetToolRules nur aus Tests erreichbar.
+        var rules = new FakeRedactionRules();
+        rules.Set(Tool, ["iban"]);
+        var service = new RedactionService(rules);
+
+        var redacted = service.RedactArguments(
+            Tool, JsonSerializer.Deserialize<JsonElement>("""{"iban":"DE123","notiz":"harmlos"}"""));
+
+        redacted.GetProperty("iban").GetString().Should().Be(RedactionService.Mask);
+        redacted.GetProperty("notiz").GetString().Should().Be("harmlos");
+    }
+
+    private sealed class FakeRedactionRules : IRedactionRules
+    {
+        private readonly Dictionary<NamespacedToolName, IReadOnlyList<string>> _rules = [];
+
+        public IReadOnlyDictionary<NamespacedToolName, IReadOnlyList<string>> All => _rules;
+
+        public void Set(NamespacedToolName tool, IReadOnlyList<string> patterns) => _rules[tool] = patterns;
+
+        public IReadOnlyList<string>? GetPatterns(NamespacedToolName tool) => _rules.GetValueOrDefault(tool);
+
+        public Task SetAsync(NamespacedToolName tool, IReadOnlyList<string>? patterns, CancellationToken ct)
+        {
+            _rules[tool] = patterns ?? [];
+            return Task.CompletedTask;
+        }
+    }
+
     [Theory]
     [InlineData(""" "nur-ein-string" """)]
     [InlineData("42")]

@@ -32,6 +32,13 @@ public interface IAuthorizationService
     /// REST-Tool-Liste und OpenAPI-Generierung — es gibt keine zweite Sichtbarkeitsquelle (DON'T Nr. 4).
     /// </summary>
     IReadOnlyList<CatalogEntry> FilterVisible(IdentityId identity, IReadOnlyList<CatalogEntry> catalog);
+
+    /// <summary>
+    /// Profil/Rollen des Aufrufers als Klartext fürs Audit-Log (FR-21) — die Id allein sagt beim
+    /// Nachvollziehen nichts. Läuft im Hot Path, wird deshalb mit dem Snapshot gecacht.
+    /// Null, wenn die Identität nicht registriert ist.
+    /// </summary>
+    string? DescribeCaller(IdentityId identity);
 }
 
 /// <summary>Prüft einen präsentierten API-Key gegen die gespeicherten Hashes (NFR-04). Null = ungültig/widerrufen/abgelaufen.</summary>

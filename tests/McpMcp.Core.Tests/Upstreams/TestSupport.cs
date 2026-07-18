@@ -118,7 +118,9 @@ internal sealed class FakeUpstreamConnection : IUpstreamConnection
             return await gate.Task.ConfigureAwait(false);
         }
 
-        return JsonSerializer.SerializeToElement(new { tool = toolName });
+        // Das token-Feld ist Absicht: Ergebnis-Payloads tragen genauso Secrets wie Argumente,
+        // der Debug-Modus muss sie maskieren.
+        return JsonSerializer.SerializeToElement(new { tool = toolName, token = "geheim-antwort" });
     }
 
     public Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct)

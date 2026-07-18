@@ -3,6 +3,7 @@
 @inject IToolCatalog Catalog
 @inject IToolInvoker Invoker
 @inject IToolDescriptionOverrides Overrides
+@inject IRedactionRules RedactionRules
 @inject UiInternalIdentity UiIdentity
 
 <h1>Tool-Explorer</h1>
@@ -54,6 +55,19 @@
                     <span class="msg-ok">@_overrideMessage</span>
                 }
             </div>
+
+            <label>
+                Zusätzliche Redaction-Muster (FR-24) — kommasepariert, Teiltreffer auf Property-Namen.
+                Gilt zusätzlich zu den globalen Mustern (password, token, secret, key …).
+            </label>
+            <input @bind="_redactionText" placeholder="z.B. iban, kontonummer" />
+            <div class="toolbar" style="margin-top:.5rem">
+                <button class="btn-ghost btn-sm" @onclick="SaveRedaction">Regeln speichern</button>
+                @if (_redactionMessage is not null)
+                {
+                    <span class="msg-ok">@_redactionMessage</span>
+                }
+            </div>
         </AuthorizeView>
 
         <AuthorizeView Policy="@UiPolicies.Operator">
@@ -96,12 +110,27 @@
 
     private string _overrideText = "";
     private string? _overrideMessage;
+    private string _redactionText = "";
+    private string? _redactionMessage;
 
     private void Select(CatalogEntry t)
     {
         _selected = t; _result = null; _status = null; _argsJson = "{}";
         _overrideText = Overrides.GetOverride(t.Name) ?? "";
         _overrideMessage = null;
+        _redactionText = string.Join(", ", RedactionRules.GetPatterns(t.Name) ?? []);
+        _redactionMessage = null;
+    }
+
+    private async Task SaveRedaction()
+    {
+        if (_selected is null) { return; }
+        var patterns = _redactionText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        await RedactionRules.SetAsync(_selected.Name, patterns, CancellationToken.None);
+        _redactionText = string.Join(", ", RedactionRules.GetPatterns(_selected.Name) ?? []);
+        _redactionMessage = patterns.Length == 0
+            ? "Regeln entfernt — es gelten nur die globalen Muster."
+            : "Gespeichert — wirkt ab dem nächsten Call auf das Audit-Log.";
     }
 
     private async Task SaveOverride()

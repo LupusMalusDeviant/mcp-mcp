@@ -53,6 +53,7 @@ public sealed class MetaToolService
     private readonly IAuthorizationService _authorization;
     private readonly IToolInvoker _invoker;
     private readonly IAuditSink _audit;
+    private readonly IRedactionService _redaction;
     private readonly TimeProvider _time;
 
     public MetaToolService(
@@ -60,16 +61,19 @@ public sealed class MetaToolService
         IAuthorizationService authorization,
         IToolInvoker invoker,
         IAuditSink audit,
+        IRedactionService redaction,
         TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(invoker);
         ArgumentNullException.ThrowIfNull(audit);
+        ArgumentNullException.ThrowIfNull(redaction);
         _catalog = catalog;
         _authorization = authorization;
         _invoker = invoker;
         _audit = audit;
+        _redaction = redaction;
         _time = timeProvider ?? TimeProvider.System;
     }
 
@@ -178,12 +182,22 @@ public sealed class MetaToolService
     }
 
     private void Audit(IdentityId caller, CallOrigin origin, string metaTool, JsonElement args, ToolInvocationResult result)
-        => _audit.Record(new AuditEvent(
+    {
+        // Auch der Meta-Pfad muss maskieren: invoke_tool trägt die kompletten Ziel-Argumente in
+        // args.arguments — ungefiltert wären das Secrets im Klartext (DON'T Nr. 2, NFR-04).
+        var hasArgs = args.ValueKind is not JsonValueKind.Undefined;
+        var redacted = hasArgs
+            ? _redaction.RedactArguments(new NamespacedToolName(metaTool), args)
+            : default;
+
+        _audit.Record(new AuditEvent(
             _time.GetUtcNow(), caller, origin, AuditEventKind.ToolCall, null, metaTool, result.Status,
-            args.ValueKind is JsonValueKind.Undefined ? null : args,
-            args.ValueKind is JsonValueKind.Undefined ? 0 : args.GetRawText().Length,
+            hasArgs ? redacted : null,
+            hasArgs ? args.GetRawText().Length : 0,
             result.Content?.GetRawText().Length,
-            result.Duration));
+            result.Duration,
+            CallerRoles: _authorization.DescribeCaller(caller)));
+    }
 
     private static ToolAction ActionFor(CatalogEntryKind kind) => kind switch
     {

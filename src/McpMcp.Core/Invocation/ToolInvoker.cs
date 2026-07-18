@@ -30,6 +30,7 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     private readonly IRedactionService _redaction;
     private readonly TimeProvider _time;
     private readonly ILogger<ToolInvoker> _logger;
+    private readonly AuditOptions _auditOptions;
     private readonly Counter<long> _calls;
     private readonly Histogram<double> _duration;
 
@@ -41,7 +42,8 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         IAuditSink audit,
         IRedactionService redaction,
         TimeProvider? timeProvider = null,
-        ILogger<ToolInvoker>? logger = null)
+        ILogger<ToolInvoker>? logger = null,
+        AuditOptions? auditOptions = null)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(rateLimiter);
@@ -57,6 +59,7 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         _redaction = redaction;
         _time = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<ToolInvoker>.Instance;
+        _auditOptions = auditOptions ?? new AuditOptions();
         _calls = Meter.CreateCounter<long>("mcpmcp.tool_calls", description: "Tool-Calls durch den Gateway");
         _duration = Meter.CreateHistogram<double>("mcpmcp.tool_call_duration", unit: "ms");
     }
@@ -217,6 +220,13 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     private void Audit(ToolInvocationRequest request, CatalogEntry? entry, ToolInvocationResult result)
     {
         var redacted = _redaction.RedactArguments(request.Tool, request.Arguments);
+
+        // FR-24: Ergebnis-Payloads landen nur im ausdrücklich aktivierten Debug-Modus im Log —
+        // und auch dann maskiert, denn Antworten tragen genauso Secrets wie Argumente.
+        JsonElement? response = _auditOptions.CaptureResponsePayloads && result.Content is { } content
+            ? _redaction.RedactArguments(request.Tool, content)
+            : null;
+
         _audit.Record(new AuditEvent(
             _time.GetUtcNow(),
             request.Caller,
@@ -228,7 +238,9 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
             redacted.ValueKind is JsonValueKind.Undefined ? null : redacted,
             RequestBytes: request.Arguments.ValueKind is JsonValueKind.Undefined ? 0 : request.Arguments.GetRawText().Length,
             ResponseBytes: result.Content?.GetRawText().Length,
-            Duration: result.Duration));
+            Duration: result.Duration,
+            CallerRoles: _authorization.DescribeCaller(request.Caller),
+            RedactedResponse: response));
     }
 
     private static ToolInvocationResult Fail(InvocationStatus status, string message, long started)

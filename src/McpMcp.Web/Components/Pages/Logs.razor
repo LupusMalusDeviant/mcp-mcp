@@ -1,6 +1,8 @@
 @page "/logs"
 @attribute [Authorize(Policy = UiPolicies.Authenticated)]
 @inject IAuditQuery AuditQuery
+@inject IRbacManagement RbacMgmt
+@inject IUpstreamSupervisor Supervisor
 @inject IJSRuntime JS
 
 <h1>Audit-Log</h1>
@@ -8,7 +10,27 @@
 
 <div class="card">
     <div class="row">
-        <div><label>Tool enthält</label><input @bind="_tool" placeholder="z.B. github__" /></div>
+        <div><label>Tool beginnt mit</label><input @bind="_tool" placeholder="z.B. github__" /></div>
+        <div>
+            <label>Agent</label>
+            <select @bind="_caller">
+                <option value="">(alle)</option>
+                @foreach (var i in _identities)
+                {
+                    <option value="@i.Id">@i.Name</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label>Server</label>
+            <select @bind="_server">
+                <option value="">(alle)</option>
+                @foreach (var s in _servers)
+                {
+                    <option value="@s.Id">@s.Slug</option>
+                }
+            </select>
+        </div>
         <div>
             <label>Status</label>
             <select @bind="_status">
@@ -42,15 +64,15 @@
 <div class="card">
     <div class="table-wrap">
         <table>
-            <thead><tr><th>Zeit (UTC)</th><th>Herkunft</th><th>Aufrufer</th><th>Tool</th><th>Status</th><th>Dauer</th></tr></thead>
+            <thead><tr><th>Zeit (UTC)</th><th>Herkunft</th><th>Aufrufer</th><th>Tool / Ereignis</th><th>Status</th><th>Dauer</th></tr></thead>
             <tbody>
                 @foreach (var e in _result.Items)
                 {
                     <tr>
                         <td class="mono">@e.Timestamp.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)</td>
                         <td>@e.Origin</td>
-                        <td class="mono muted">@(e.Caller?.ToString() ?? "—")</td>
-                        <td class="mono">@(e.Tool ?? "—")</td>
+                        <td title="@e.Caller?.ToString()">@(e.CallerRoles ?? e.Caller?.ToString() ?? "System")</td>
+                        <td class="mono">@(e.Tool ?? e.Detail ?? "—")</td>
                         <td>@StatusBadge(e.Status)</td>
                         <td class="muted">@(e.Duration is { } d ? $"{d.TotalMilliseconds:0} ms" : "—")</td>
                     </tr>
@@ -69,13 +91,21 @@
 </div>
 
 @code {
-    private string _tool = "", _status = "", _origin = "";
+    private string _tool = "", _status = "", _origin = "", _caller = "", _server = "";
     private int _hours = 24, _page = 1;
     private PagedResult<AuditEvent> _result = new([], 0, 1, 50);
+    private IReadOnlyList<Identity> _identities = [];
+    private IReadOnlyList<UpstreamStatus> _servers = [];
 
     private int TotalPages => (int)Math.Ceiling(_result.TotalCount / (double)_result.PageSize);
 
-    protected override Task OnInitializedAsync() => Search(1);
+    protected override async Task OnInitializedAsync()
+    {
+        // Auswahllisten statt Freitext: Agent- und Server-Filter arbeiten auf Guids, die niemand abtippt.
+        _identities = await RbacMgmt.ListIdentitiesAsync(CancellationToken.None);
+        _servers = Supervisor.Statuses;
+        await Search(1);
+    }
 
     private async Task Search(int page)
     {
@@ -85,8 +115,11 @@
 
     private AuditFilter BuildFilter(int page, int pageSize) => new(
         From: DateTimeOffset.UtcNow.AddHours(-Math.Max(1, _hours)),
-        Tool: string.IsNullOrWhiteSpace(_tool) ? null : _tool.Trim(),
+        Caller: Guid.TryParse(_caller, out var c) ? new IdentityId(c) : null,
+        Server: Guid.TryParse(_server, out var srv) ? new ServerId(srv) : null,
+        ToolPrefix: string.IsNullOrWhiteSpace(_tool) ? null : _tool.Trim(),
         Status: Enum.TryParse<InvocationStatus>(_status, out var s) ? s : null,
+        Origin: Enum.TryParse<CallOrigin>(_origin, out var o) ? o : null,
         Page: page,
         PageSize: pageSize);
 
@@ -112,13 +145,15 @@
     {
         var all = await AuditQuery.QueryAsync(BuildFilter(1, 5000), CancellationToken.None);
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("timestamp,origin,caller,tool,status,durationMs");
+        sb.AppendLine("timestamp,origin,caller,callerRoles,tool,detail,status,durationMs");
         foreach (var e in all.Items)
         {
             sb.Append(e.Timestamp.UtcDateTime.ToString("O", CultureInfo.InvariantCulture)).Append(',')
               .Append(e.Origin).Append(',')
               .Append(e.Caller?.ToString() ?? "").Append(',')
+              .Append(Csv(e.CallerRoles)).Append(',')
               .Append(Csv(e.Tool)).Append(',')
+              .Append(Csv(e.Detail)).Append(',')
               .Append(e.Status?.ToString() ?? "").Append(',')
               .Append((e.Duration?.TotalMilliseconds ?? 0).ToString("0", CultureInfo.InvariantCulture))
               .AppendLine();
@@ -126,8 +161,11 @@
         await Download($"audit-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv", "text/csv", sb.ToString());
     }
 
+    // Detail/CallerRoles sind Freitext: neben Kommas müssen auch Anführungszeichen und Zeilenumbrüche
+    // quotiert werden, sonst zerreißt der Export die Spalten.
     private static string Csv(string? value)
-        => value is null ? "" : value.Contains(',') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
+        => value is null ? ""
+            : value.AsSpan().IndexOfAny(",\"\r\n") >= 0 ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
 
     private async Task Download(string filename, string mime, string content)
     {
