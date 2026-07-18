@@ -6,9 +6,19 @@
 
 **A self-hosted meta-MCP gateway on .NET** — connect one endpoint to your agents, and manage all your MCP servers behind it.
 
-> ✅ **v1.1.** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. Security-audited, Dockerized (< 300 MB, non-root), 200+ tests green on Windows + Linux (persistence also against real PostgreSQL).
+> [!CAUTION]
+> **The v1.0.0 and v1.1.0 releases have been retracted — do not use them.**
+> On the lazy path (`invoke_tool`) they wrote tool arguments to the audit log **unredacted**, so
+> credentials passed through that path ended up in the database in plaintext. If you ran either
+> release, check the `AuditEvents` table, rotate anything exposed, and delete the affected rows.
+> See the [threat model](docs/security/threat-model.md) for details. The fix is on `main`;
+> a corrected release follows once the planned scope is complete and independently verified.
+
+> **Current state (unreleased, on `main`).** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. Dockerized (< 300 MB, non-root), 220+ tests green on Windows + Linux (persistence also against real PostgreSQL), [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
 >
-> **New in v1.1:** EF migrations with automatic, step-free upgrade of v1.0 databases · optional X509 encryption of the DataProtection key ring · PBKDF2 raised to 600 k iterations (existing hashes stay valid) · recovery CLI (`--reset-ui-admin`, `--issue-bootstrap-key`) · [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
+> A security audit was performed before v1.0, but it missed the redaction defect above — the gap was
+> only found later by an independent requirement-versus-code review. Treat the audit as one input,
+> not a clean bill of health.
 
 ## The problem
 
@@ -86,6 +96,8 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M2 "Enforcement stands" | Catalog, RBAC, audit, MCP endpoint, hot-swap | ✅ done |
 | M3 "Both bridges carry" | REST facade, OpenAPI import | ✅ done |
 | M4 "v1.0" | Web UI, hardening, security audit, Docker release | ✅ done |
+| M5 "Gap closure" | 13 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done, unreleased |
+| M6 "Corrected release" | FR-02 (SSE legacy transport) decision, then a release that has been verified against the requirements | ⏳ open |
 
 ## License
 
