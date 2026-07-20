@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Tests.Upstreams;
 using Xunit;
@@ -17,7 +17,7 @@ public class ToolInvokerTests
         var admin = _w.RegisterAdmin();
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.Success);
         result.Content!.Value.GetProperty("tool").GetString().Should().Be("echo");
@@ -38,7 +38,7 @@ public class ToolInvokerTests
         _w.RateLimiter.Allow = false;
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.Denied);
         result.ErrorMessage.Should().Contain("Rate-Limit");
@@ -52,7 +52,7 @@ public class ToolInvokerTests
         var admin = _w.RegisterAdmin();
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, NamespacedToolName.Create(_w.Slug, "gibtsnicht")), CancellationToken.None);
+            InvokerTestWorld.Request(admin, NamespacedToolName.Create(_w.Slug, "gibtsnicht")), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.ToolNotFound);
         _w.Audit.Events.Should().ContainSingle().Which.Server.Should().BeNull();
@@ -64,7 +64,7 @@ public class ToolInvokerTests
         var restricted = _w.RegisterAgent(); // keine Grants
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(restricted, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(restricted, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.Denied);
         result.ErrorMessage.Should().Contain("Default-Deny");
@@ -78,11 +78,11 @@ public class ToolInvokerTests
         var admin = _w.RegisterAdmin();
 
         var missingRequired = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { falsch = 1 }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { falsch = 1 }), TestContext.Current.CancellationToken);
         var wrongType = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = 42 }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = 42 }), TestContext.Current.CancellationToken);
         var undefinedArgs = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo), TestContext.Current.CancellationToken);
 
         missingRequired.Status.Should().Be(InvocationStatus.ValidationFailed);
         wrongType.Status.Should().Be(InvocationStatus.ValidationFailed);
@@ -97,7 +97,7 @@ public class ToolInvokerTests
         var admin = _w.RegisterAdmin();
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Free, new { irgendwas = true }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Free, new { irgendwas = true }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.Success,
             "R3-Fallback: nicht validierbare Schemas dürfen den Call nicht fälschlich ablehnen");
@@ -110,7 +110,7 @@ public class ToolInvokerTests
         _w.Supervisor.SetConnection(_w.Server, null);
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.UpstreamError);
         result.ErrorMessage.Should().Contain("nicht verbunden");
@@ -124,7 +124,7 @@ public class ToolInvokerTests
         _w.Connection.CallException = new IOException("Rohr geplatzt");
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.UpstreamError);
         result.ErrorMessage.Should().Contain("Rohr geplatzt");
@@ -137,7 +137,7 @@ public class ToolInvokerTests
         _w.Connection.CallException = new TimeoutException("zu langsam");
 
         var result = await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         result.Status.Should().Be(InvocationStatus.Timeout);
         _w.Audit.Events.Should().ContainSingle().Which.Status.Should().Be(InvocationStatus.Timeout);
@@ -151,7 +151,7 @@ public class ToolInvokerTests
 
         var call = _w.Invoker.InvokeAsync(
             InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }, timeoutOverride: TimeSpan.FromSeconds(1)),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         await TestData.WaitUntilAdvancingAsync(_w.Time, () => call.IsCompleted, because: "Override-Timeout muss greifen");
 
         (await call).Status.Should().Be(InvocationStatus.Timeout);
@@ -181,13 +181,13 @@ public class ToolInvokerTests
 
         // Default: kein Ergebnis-Payload im Log (FR-24/NFR-04).
         await _w.Invoker.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
         _w.Audit.Events.Should().ContainSingle().Which.RedactedResponse
             .Should().BeNull("Ergebnis-Payloads sind ohne ausdrücklichen Debug-Modus tabu");
 
         var debug = _w.WithAuditOptions(new AuditOptions(CaptureResponsePayloads: true));
         await debug.InvokeAsync(
-            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), CancellationToken.None);
+            InvokerTestWorld.Request(admin, _w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken);
 
         var evt = _w.Audit.Events[^1];
         evt.RedactedResponse.Should().NotBeNull("im Debug-Modus wird der Payload mitgeschrieben");
@@ -203,7 +203,7 @@ public class ToolInvokerTests
 
         await _w.Invoker.InvokeAsync(
             InvokerTestWorld.Request(admin, _w.Free, new { message = "offen", password = "geheim123" }),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
 
         var evt = _w.Audit.Events.Should().ContainSingle().Subject;
         var json = evt.RedactedArguments!.Value.GetRawText();

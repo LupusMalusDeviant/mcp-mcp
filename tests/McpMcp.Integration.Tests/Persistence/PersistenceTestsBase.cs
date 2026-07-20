@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Audit;
 using McpMcp.Core.Rbac;
@@ -45,7 +45,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
     /// <summary>Die v1.0-Baseline des jeweiligen Providers — Ausgangspunkt des Legacy-Upgrade-Tests.</summary>
     protected abstract string InitialCreateMigration { get; }
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         var options = await CreateOptionsAsync();
         if (options is null)
@@ -55,10 +55,10 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
 
         Factory = new TestDbContextFactory(options);
         // Tests nutzen denselben Migrationspfad wie der Host (v1.1), nicht mehr EnsureCreated.
-        await new DatabaseInitializer(Factory).InitializeAsync(CancellationToken.None);
+        await new DatabaseInitializer(Factory).InitializeAsync(TestContext.Current.CancellationToken);
     }
 
-    public virtual Task DisposeAsync() => Task.CompletedTask;
+    public virtual ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     protected static UpstreamServerConfig ConfigWithSecret(string slug = "srv") => new(
         slug, $"Server {slug}", UpstreamTransportKind.Stdio, Enabled: true,
@@ -66,22 +66,22 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             "cmd", ["--arg"],
             new Dictionary<string, string> { ["API_TOKEN"] = Secret }));
 
-    [SkippableFact]
+    [Fact]
     public async Task ConfigStore_roundtrips_versions_and_encrypts_payload()
     {
         MarkSkippedIfUnavailable();
         var store = new EfUpstreamConfigStore(Factory, DataProtection);
         var id = ServerId.New();
 
-        var v1 = await store.AppendVersionAsync(id, ConfigWithSecret("alt"), CancellationToken.None);
-        var v2 = await store.AppendVersionAsync(id, ConfigWithSecret("neu"), CancellationToken.None);
+        var v1 = await store.AppendVersionAsync(id, ConfigWithSecret("alt"), TestContext.Current.CancellationToken);
+        var v2 = await store.AppendVersionAsync(id, ConfigWithSecret("neu"), TestContext.Current.CancellationToken);
 
         v1.Value.Should().Be(1);
         v2.Value.Should().Be(2);
-        (await store.GetVersionAsync(id, v1, CancellationToken.None))!.Slug.Should().Be("alt");
-        (await store.GetVersionAsync(id, v2, CancellationToken.None))!.Stdio!.EnvironmentVariables!["API_TOKEN"]
+        (await store.GetVersionAsync(id, v1, TestContext.Current.CancellationToken))!.Slug.Should().Be("alt");
+        (await store.GetVersionAsync(id, v2, TestContext.Current.CancellationToken))!.Stdio!.EnvironmentVariables!["API_TOKEN"]
             .Should().Be(Secret, "die Entschlüsselung muss verlustfrei sein");
-        (await store.GetHistoryAsync(id, CancellationToken.None)).Select(h => h.Version.Value).Should().Equal(1, 2);
+        (await store.GetHistoryAsync(id, TestContext.Current.CancellationToken)).Select(h => h.Version.Value).Should().Equal(1, 2);
 
         // NFR-04: der persistierte Blob darf das Secret nicht im Klartext enthalten
         await using (var db = await Factory.CreateDbContextAsync())
@@ -94,11 +94,11 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             }
         }
 
-        await store.RemoveAsync(id, CancellationToken.None);
-        (await store.GetHistoryAsync(id, CancellationToken.None)).Should().BeEmpty();
+        await store.RemoveAsync(id, TestContext.Current.CancellationToken);
+        (await store.GetHistoryAsync(id, TestContext.Current.CancellationToken)).Should().BeEmpty();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task RbacStore_persists_and_rehydrates_directory()
     {
         MarkSkippedIfUnavailable();
@@ -112,41 +112,41 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             [NamespacedToolName.Create("srv", "tool")], LazyToolsEnabled: true);
         var identity = new Identity(IdentityId.New(), "agent-x", IdentityKind.Agent, [role.Id], profile.Id);
 
-        await store.UpsertRoleAsync(role, CancellationToken.None);
-        await store.UpsertProfileAsync(profile, CancellationToken.None);
-        await store.UpsertIdentityAsync(identity, CancellationToken.None);
+        await store.UpsertRoleAsync(role, TestContext.Current.CancellationToken);
+        await store.UpsertProfileAsync(profile, TestContext.Current.CancellationToken);
+        await store.UpsertIdentityAsync(identity, TestContext.Current.CancellationToken);
 
         // Frisches Directory aus der DB hydratisieren — muss inhaltsgleich sein
         var freshDirectory = new InMemoryRbacDirectory();
-        await new PersistentRbacStore(Factory, freshDirectory).LoadAsync(CancellationToken.None);
+        await new PersistentRbacStore(Factory, freshDirectory).LoadAsync(TestContext.Current.CancellationToken);
 
         freshDirectory.GetRole(role.Id).Should().BeEquivalentTo(role);
         freshDirectory.GetProfile(profile.Id).Should().BeEquivalentTo(profile);
         freshDirectory.GetIdentity(identity.Id).Should().BeEquivalentTo(identity);
 
-        await store.RemoveIdentityAsync(identity.Id, CancellationToken.None);
-        await store.RemoveRoleAsync(role.Id, CancellationToken.None);
-        await store.RemoveProfileAsync(profile.Id, CancellationToken.None);
+        await store.RemoveIdentityAsync(identity.Id, TestContext.Current.CancellationToken);
+        await store.RemoveRoleAsync(role.Id, TestContext.Current.CancellationToken);
+        await store.RemoveProfileAsync(profile.Id, TestContext.Current.CancellationToken);
         var emptied = new InMemoryRbacDirectory();
-        await new PersistentRbacStore(Factory, emptied).LoadAsync(CancellationToken.None);
+        await new PersistentRbacStore(Factory, emptied).LoadAsync(TestContext.Current.CancellationToken);
         emptied.GetIdentity(identity.Id).Should().BeNull();
         emptied.GetRole(role.Id).Should().BeNull();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task ApiKeys_issue_validate_revoke_and_expiry()
     {
         MarkSkippedIfUnavailable();
         var service = new ApiKeyService(Factory);
         var identity = IdentityId.New();
 
-        var issued = await service.IssueAsync(identity, "test-key", expiresAt: null, CancellationToken.None);
+        var issued = await service.IssueAsync(identity, "test-key", expiresAt: null, TestContext.Current.CancellationToken);
         issued.PlaintextKey.Should().StartWith("mcpk_");
 
-        (await service.ValidateAsync(issued.PlaintextKey, CancellationToken.None)).Should().Be(identity);
-        (await service.ValidateAsync(issued.PlaintextKey + "x", CancellationToken.None)).Should().BeNull("manipuliertes Secret");
-        (await service.ValidateAsync("mcpk_falschesformat", CancellationToken.None)).Should().BeNull();
-        (await service.ValidateAsync("völlig-falsch", CancellationToken.None)).Should().BeNull();
+        (await service.ValidateAsync(issued.PlaintextKey, TestContext.Current.CancellationToken)).Should().Be(identity);
+        (await service.ValidateAsync(issued.PlaintextKey + "x", TestContext.Current.CancellationToken)).Should().BeNull("manipuliertes Secret");
+        (await service.ValidateAsync("mcpk_falschesformat", TestContext.Current.CancellationToken)).Should().BeNull();
+        (await service.ValidateAsync("völlig-falsch", TestContext.Current.CancellationToken)).Should().BeNull();
 
         // Hash-Speicherung: Klartext-Secret darf nirgends in der Zeile stehen (NFR-04)
         var secretPart = issued.PlaintextKey.Split('_')[2];
@@ -156,18 +156,18 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             row.Hash.Should().NotContain(secretPart);
         }
 
-        var expired = await service.IssueAsync(identity, "abgelaufen", DateTimeOffset.UtcNow.AddHours(-1), CancellationToken.None);
-        (await service.ValidateAsync(expired.PlaintextKey, CancellationToken.None)).Should().BeNull("Gültigkeitsfenster (FR-31)");
+        var expired = await service.IssueAsync(identity, "abgelaufen", DateTimeOffset.UtcNow.AddHours(-1), TestContext.Current.CancellationToken);
+        (await service.ValidateAsync(expired.PlaintextKey, TestContext.Current.CancellationToken)).Should().BeNull("Gültigkeitsfenster (FR-31)");
 
-        await service.RevokeAsync(issued.KeyId, CancellationToken.None);
-        (await service.ValidateAsync(issued.PlaintextKey, CancellationToken.None)).Should().BeNull("Widerruf wirkt sofort");
+        await service.RevokeAsync(issued.KeyId, TestContext.Current.CancellationToken);
+        (await service.ValidateAsync(issued.PlaintextKey, TestContext.Current.CancellationToken)).Should().BeNull("Widerruf wirkt sofort");
 
-        var list = await service.ListAsync(identity, CancellationToken.None);
+        var list = await service.ListAsync(identity, TestContext.Current.CancellationToken);
         list.Should().HaveCount(2);
         list.Single(k => k.KeyId == issued.KeyId).RevokedAt.Should().NotBeNull();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Audit_1000_mixed_calls_yield_exactly_1000_attributed_redacted_rows()
     {
         MarkSkippedIfUnavailable();
@@ -217,7 +217,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         anyRow.RedactedArgumentsJson.Should().Contain(RedactionService.Mask);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task AuditQuery_filters_and_pages()
     {
         MarkSkippedIfUnavailable();
@@ -245,38 +245,38 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
 
         var query = new EfAuditQuery(Factory);
 
-        var byCaller = await query.QueryAsync(new AuditFilter(Caller: caller), CancellationToken.None);
+        var byCaller = await query.QueryAsync(new AuditFilter(Caller: caller), TestContext.Current.CancellationToken);
         byCaller.TotalCount.Should().Be(15);
         byCaller.Items.Should().OnlyContain(e => e.Caller == caller);
 
-        var denied = await query.QueryAsync(new AuditFilter(Status: InvocationStatus.Denied), CancellationToken.None);
+        var denied = await query.QueryAsync(new AuditFilter(Status: InvocationStatus.Denied), TestContext.Current.CancellationToken);
         denied.TotalCount.Should().Be(10);
 
-        var byTool = await query.QueryAsync(new AuditFilter(ToolPrefix: "srv__a"), CancellationToken.None);
+        var byTool = await query.QueryAsync(new AuditFilter(ToolPrefix: "srv__a"), TestContext.Current.CancellationToken);
         byTool.TotalCount.Should().Be(10);
         byTool.Items.Should().OnlyContain(e => e.CallerRoles == "agent [rolle]", "FR-21: Rolle wird mitgelesen");
 
         // FR-23: die UI sucht nach dem Server-Namespace, nicht nach dem vollen Tool-Namen —
         // mit exaktem Vergleich hätte das hier 0 statt 30 Treffer ergeben.
-        var byPrefix = await query.QueryAsync(new AuditFilter(ToolPrefix: "srv__"), CancellationToken.None);
+        var byPrefix = await query.QueryAsync(new AuditFilter(ToolPrefix: "srv__"), TestContext.Current.CancellationToken);
         byPrefix.TotalCount.Should().Be(30);
 
-        var byOrigin = await query.QueryAsync(new AuditFilter(Origin: CallOrigin.Rest), CancellationToken.None);
+        var byOrigin = await query.QueryAsync(new AuditFilter(Origin: CallOrigin.Rest), TestContext.Current.CancellationToken);
         byOrigin.TotalCount.Should().Be(30);
-        (await query.QueryAsync(new AuditFilter(Origin: CallOrigin.Mcp), CancellationToken.None))
+        (await query.QueryAsync(new AuditFilter(Origin: CallOrigin.Mcp), TestContext.Current.CancellationToken))
             .TotalCount.Should().Be(0, "der Herkunft-Filter muss auch ausschließen");
 
-        var page2 = await query.QueryAsync(new AuditFilter(Page: 2, PageSize: 12), CancellationToken.None);
+        var page2 = await query.QueryAsync(new AuditFilter(Page: 2, PageSize: 12), TestContext.Current.CancellationToken);
         page2.Items.Should().HaveCount(12);
         page2.TotalCount.Should().Be(30);
 
         var window = await query.QueryAsync(
-            new AuditFilter(From: baseTime.AddMinutes(-9.5), To: baseTime), CancellationToken.None);
+            new AuditFilter(From: baseTime.AddMinutes(-9.5), To: baseTime), TestContext.Current.CancellationToken);
         window.TotalCount.Should().Be(10);
         window.Items.Should().BeInDescendingOrder(e => e.Timestamp);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Retention_removes_only_expired_events()
     {
         MarkSkippedIfUnavailable();
@@ -289,29 +289,29 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             await db.SaveChangesAsync();
         }
 
-        var deleted = await new AuditRetentionJob(Factory, options).ExecuteOnceAsync(CancellationToken.None);
+        var deleted = await new AuditRetentionJob(Factory, options).ExecuteOnceAsync(TestContext.Current.CancellationToken);
 
         deleted.Should().Be(2);
         await using var check = await Factory.CreateDbContextAsync();
         (await check.AuditEvents.CountAsync()).Should().Be(1);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task UiUsers_create_validate_and_enforce_unique_username()
     {
         MarkSkippedIfUnavailable();
         var service = new UiUserService(Factory);
         var name = $"betreiber-{Guid.NewGuid():N}";
 
-        (await service.AnyExistAsync(CancellationToken.None)).Should().BeFalse();
-        var created = await service.CreateAsync(name, "geheimes-passwort", UiRole.Operator, CancellationToken.None);
+        (await service.AnyExistAsync(TestContext.Current.CancellationToken)).Should().BeFalse();
+        var created = await service.CreateAsync(name, "geheimes-passwort", UiRole.Operator, TestContext.Current.CancellationToken);
         created.Role.Should().Be(UiRole.Operator);
-        (await service.AnyExistAsync(CancellationToken.None)).Should().BeTrue();
+        (await service.AnyExistAsync(TestContext.Current.CancellationToken)).Should().BeTrue();
 
-        (await service.ValidateCredentialsAsync(name, "geheimes-passwort", CancellationToken.None))!.Id
+        (await service.ValidateCredentialsAsync(name, "geheimes-passwort", TestContext.Current.CancellationToken))!.Id
             .Should().Be(created.Id);
-        (await service.ValidateCredentialsAsync(name, "falsch", CancellationToken.None)).Should().BeNull();
-        (await service.ValidateCredentialsAsync("gibtsnicht", "x", CancellationToken.None)).Should().BeNull();
+        (await service.ValidateCredentialsAsync(name, "falsch", TestContext.Current.CancellationToken)).Should().BeNull();
+        (await service.ValidateCredentialsAsync("gibtsnicht", "x", TestContext.Current.CancellationToken)).Should().BeNull();
 
         // Passwort-Hash liegt nie im Klartext (NFR-04)
         await using (var db = await Factory.CreateDbContextAsync())
@@ -320,31 +320,31 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             row.PasswordHash.Should().NotContain("geheimes-passwort");
         }
 
-        var act = () => service.CreateAsync(name, "andere", UiRole.Admin, CancellationToken.None);
+        var act = () => service.CreateAsync(name, "andere", UiRole.Admin, TestContext.Current.CancellationToken);
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*existiert bereits*");
 
-        await service.SetPasswordAsync(created.Id, "neues-passwort", CancellationToken.None);
-        (await service.ValidateCredentialsAsync(name, "neues-passwort", CancellationToken.None)).Should().NotBeNull();
-        (await service.ValidateCredentialsAsync(name, "geheimes-passwort", CancellationToken.None)).Should().BeNull();
+        await service.SetPasswordAsync(created.Id, "neues-passwort", TestContext.Current.CancellationToken);
+        (await service.ValidateCredentialsAsync(name, "neues-passwort", TestContext.Current.CancellationToken)).Should().NotBeNull();
+        (await service.ValidateCredentialsAsync(name, "geheimes-passwort", TestContext.Current.CancellationToken)).Should().BeNull();
 
-        await service.DeleteAsync(created.Id, CancellationToken.None);
-        (await service.ValidateCredentialsAsync(name, "neues-passwort", CancellationToken.None)).Should().BeNull();
+        await service.DeleteAsync(created.Id, TestContext.Current.CancellationToken);
+        (await service.ValidateCredentialsAsync(name, "neues-passwort", TestContext.Current.CancellationToken)).Should().BeNull();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Assets_version_and_retrieve()
     {
         MarkSkippedIfUnavailable();
         var store = new EfAssetStore(Factory);
 
-        var id = await store.CreateAsync("mein-skill", "Ein Test-Skill", "Version-1-Inhalt", CancellationToken.None);
-        var v2 = await store.PublishAsync(id, "Version-2-Inhalt", CancellationToken.None);
+        var id = await store.CreateAsync("mein-skill", "Ein Test-Skill", "Version-1-Inhalt", TestContext.Current.CancellationToken);
+        var v2 = await store.PublishAsync(id, "Version-2-Inhalt", TestContext.Current.CancellationToken);
         v2.Value.Should().Be(2);
 
-        (await store.GetAsync(id, null, CancellationToken.None)).Content.Should().Be("Version-2-Inhalt", "latest");
-        (await store.GetAsync(id, new AssetVersion(1), CancellationToken.None)).Content.Should().Be("Version-1-Inhalt");
+        (await store.GetAsync(id, null, TestContext.Current.CancellationToken)).Content.Should().Be("Version-2-Inhalt", "latest");
+        (await store.GetAsync(id, new AssetVersion(1), TestContext.Current.CancellationToken)).Content.Should().Be("Version-1-Inhalt");
 
-        var list = await store.ListAsync(IdentityId.New(), CancellationToken.None);
+        var list = await store.ListAsync(IdentityId.New(), TestContext.Current.CancellationToken);
         list.Should().ContainSingle(a => a.Id == id).Which.LatestVersion.Value.Should().Be(2);
     }
 
@@ -352,7 +352,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
     /// v1.1 hebt PBKDF2 von 100k auf 600k Iterationen. Bestehende Hashes tragen ihre Iterationszahl
     /// im Format mit und müssen weiterhin verifizieren — sonst würde das Upgrade alle Logins sperren.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task Password_hashed_with_legacy_iteration_count_still_verifies()
     {
         MarkSkippedIfUnavailable();
@@ -381,14 +381,14 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         }
 
         var service = new UiUserService(Factory);
-        (await service.ValidateCredentialsAsync(username, password, CancellationToken.None))
+        (await service.ValidateCredentialsAsync(username, password, TestContext.Current.CancellationToken))
             .Should().NotBeNull("v1.0-Hashes müssen nach der Iterations-Erhöhung weiter funktionieren");
-        (await service.ValidateCredentialsAsync(username, "falsch", CancellationToken.None))
+        (await service.ValidateCredentialsAsync(username, "falsch", TestContext.Current.CancellationToken))
             .Should().BeNull();
     }
 
     /// <summary>WP8.4: Die Recovery-Kommandos müssen aus dem „kein Zugang mehr"-Zustand herausführen.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task Recovery_commands_restore_ui_and_agent_access()
     {
         MarkSkippedIfUnavailable();
@@ -396,28 +396,28 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         var username = $"recovery-{Guid.NewGuid():N}";
 
         // Fall 1: Nutzer existiert nicht → wird als Admin angelegt.
-        var created = await McpMcp.Server.AdminCommands.ResetUiAdminAsync(users, username, CancellationToken.None);
+        var created = await McpMcp.Server.AdminCommands.ResetUiAdminAsync(users, username, TestContext.Current.CancellationToken);
         created.WasExisting.Should().BeFalse();
         created.Role.Should().Be(UiRole.Admin);
-        (await users.ValidateCredentialsAsync(username, created.Password, CancellationToken.None))
+        (await users.ValidateCredentialsAsync(username, created.Password, TestContext.Current.CancellationToken))
             .Should().NotBeNull("das ausgegebene Passwort muss funktionieren");
 
         // Fall 2: Nutzer existiert → Passwort neu, Rolle unverändert, altes Passwort ungültig.
-        var reset = await McpMcp.Server.AdminCommands.ResetUiAdminAsync(users, username, CancellationToken.None);
+        var reset = await McpMcp.Server.AdminCommands.ResetUiAdminAsync(users, username, TestContext.Current.CancellationToken);
         reset.WasExisting.Should().BeTrue();
         reset.Password.Should().NotBe(created.Password);
-        (await users.ValidateCredentialsAsync(username, reset.Password, CancellationToken.None)).Should().NotBeNull();
-        (await users.ValidateCredentialsAsync(username, created.Password, CancellationToken.None))
+        (await users.ValidateCredentialsAsync(username, reset.Password, TestContext.Current.CancellationToken)).Should().NotBeNull();
+        (await users.ValidateCredentialsAsync(username, created.Password, TestContext.Current.CancellationToken))
             .Should().BeNull("das alte Passwort darf nach dem Reset nicht mehr gelten");
 
         // Notfall-API-Key: neue Identität mit Global-Grant, Key ist sofort gültig.
         var directory = new InMemoryRbacDirectory();
         var rbac = new PersistentRbacStore(Factory, directory);
         var keys = new ApiKeyService(Factory);
-        var recovery = await McpMcp.Server.AdminCommands.IssueBootstrapKeyAsync(rbac, keys, CancellationToken.None);
+        var recovery = await McpMcp.Server.AdminCommands.IssueBootstrapKeyAsync(rbac, keys, TestContext.Current.CancellationToken);
 
         recovery.ApiKey.Should().StartWith("mcpk_");
-        var identityId = await keys.ValidateAsync(recovery.ApiKey, CancellationToken.None);
+        var identityId = await keys.ValidateAsync(recovery.ApiKey, TestContext.Current.CancellationToken);
         identityId.Should().NotBeNull("der ausgegebene Key muss sofort validieren");
 
         var authorization = new AuthorizationService(directory);
@@ -425,13 +425,13 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             .Allowed.Should().BeTrue("die Notfall-Identität trägt einen Global-Grant");
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Fresh_database_is_created_from_migrations()
     {
         MarkSkippedIfUnavailable();
         IDbContextFactory<McpMcpDbContext> factory = new TestDbContextFactory(await CreateFreshOptionsAsync("fresh"));
 
-        var outcome = await new DatabaseInitializer(factory).InitializeAsync(CancellationToken.None);
+        var outcome = await new DatabaseInitializer(factory).InitializeAsync(TestContext.Current.CancellationToken);
 
         outcome.Should().Be(DatabaseInitOutcome.CreatedFromMigrations);
         await using var db = await factory.CreateDbContextAsync();
@@ -445,7 +445,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
     /// Der eigentliche v1.1-Upgrade-Nachweis: eine v1.0-Datenbank (Schema ohne Migrationshistorie)
     /// darf beim Start weder scheitern noch Daten verlieren — sie wird gestempelt und dann migriert.
     /// </summary>
-    [SkippableFact]
+    [Fact]
     public async Task Legacy_v1_database_is_baselined_without_data_loss()
     {
         MarkSkippedIfUnavailable();
@@ -469,7 +469,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
             (await legacy.Database.GetAppliedMigrationsAsync()).Should().BeEmpty("v1.0 kannte keine Migrationen");
         }
 
-        var outcome = await new DatabaseInitializer(factory).InitializeAsync(CancellationToken.None);
+        var outcome = await new DatabaseInitializer(factory).InitializeAsync(TestContext.Current.CancellationToken);
 
         outcome.Should().Be(DatabaseInitOutcome.BaselinedLegacySchema);
         await using (var upgraded = await factory.CreateDbContextAsync())
@@ -483,7 +483,7 @@ public abstract class PersistenceTestsBase : IAsyncLifetime
         }
 
         // Zweiter Start derselben Instanz: normal migriert, nicht erneut gestempelt.
-        (await new DatabaseInitializer(factory).InitializeAsync(CancellationToken.None))
+        (await new DatabaseInitializer(factory).InitializeAsync(TestContext.Current.CancellationToken))
             .Should().Be(DatabaseInitOutcome.Migrated, "Initialisierung ist idempotent");
     }
 

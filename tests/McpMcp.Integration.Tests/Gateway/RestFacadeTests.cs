@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Xunit;
 
@@ -87,7 +87,7 @@ public sealed class RestFacadeTests : IClassFixture<GatewayFixture>
         await IntegrationSupport.WaitUntilAsync(() =>
         {
             events = _gw.AuditQuery.QueryAsync(
-                new AuditFilter(Caller: identity, ToolPrefix: "parity1__echo"), CancellationToken.None)
+                new AuditFilter(Caller: identity, ToolPrefix: "parity1__echo"), TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult().Items;
             return events.Count == 2;
         });

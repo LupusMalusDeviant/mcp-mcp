@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Rbac;
 using McpMcp.Core.Tests.Upstreams;

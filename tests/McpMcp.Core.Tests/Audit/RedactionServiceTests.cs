@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Audit;
 using Xunit;

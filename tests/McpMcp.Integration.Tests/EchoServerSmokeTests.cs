@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Xunit;

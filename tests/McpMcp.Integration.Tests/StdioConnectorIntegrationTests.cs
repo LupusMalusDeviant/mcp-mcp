@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Upstream;
 using Xunit;
@@ -15,19 +15,19 @@ public class StdioConnectorIntegrationTests
         var id = ServerId.New();
 
         await using var connection = await connector.ConnectAsync(
-            id, IntegrationSupport.StdioServer("echo", "EchoServer"), CancellationToken.None);
+            id, IntegrationSupport.StdioServer("echo", "EchoServer"), TestContext.Current.CancellationToken);
 
         connection.Id.Should().Be(id);
 
-        var inventory = await connection.DiscoverAsync(CancellationToken.None);
+        var inventory = await connection.DiscoverAsync(TestContext.Current.CancellationToken);
         inventory.Tools.Should().ContainSingle(t => t.Name == "echo");
         inventory.Tools[0].InputSchema.ValueKind.Should().Be(JsonValueKind.Object, "Schema wird mitgeliefert");
 
         var args = JsonSerializer.SerializeToElement(new { message = "Hallo Konnektor" });
-        var result = await connection.CallToolAsync("echo", args, CancellationToken.None);
+        var result = await connection.CallToolAsync("echo", args, TestContext.Current.CancellationToken);
 
         result.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("Echo: Hallo Konnektor");
 
-        await connection.PingAsync(CancellationToken.None);
+        await connection.PingAsync(TestContext.Current.CancellationToken);
     }
 }

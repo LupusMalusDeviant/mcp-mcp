@@ -1,7 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # ── Build ────────────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Distro explizit gepinnt statt nur ":10.0": Der Default-Alias zeigt heute auf Ubuntu 24.04
+# (noble), wandert aber bei einem künftigen Distro-Wechsel weiter — das soll nicht unbemerkt
+# unter einem laufenden Build passieren.
+#
+# Bewusst KEINE -chiseled-Variante: Das Laufzeit-Image richtet /data per chown/chmod ein und
+# braucht dafür eine Shell (siehe unten). Chiseled ist distroless und hat keine.
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS build
 WORKDIR /src
 
 # Restore zuerst (Layer-Cache): nur die Projekt-/Props-Dateien kopieren.
@@ -21,7 +27,7 @@ RUN dotnet publish src/McpMcp.Server/McpMcp.Server.csproj \
     -c Release -o /app --no-restore /p:UseAppHost=false
 
 # ── Runtime (Ubuntu-noble-Basis mit Shell, non-root; ~230 MB < 300 MB) ───────
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 

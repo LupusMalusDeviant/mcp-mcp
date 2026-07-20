@@ -1,10 +1,9 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Catalog;
 using McpMcp.Core.Rbac;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace McpMcp.Core.Tests.Catalog;
 

@@ -4,6 +4,7 @@ using McpMcp.Persistence;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
+using Xunit;
 
 namespace McpMcp.Integration.Tests.Gateway;
 
@@ -67,14 +68,14 @@ public sealed class GatewayFixture : WebApplicationFactory<Program>
     {
         if (profile is not null)
         {
-            await RbacStore.UpsertProfileAsync(profile, CancellationToken.None);
+            await RbacStore.UpsertProfileAsync(profile, TestContext.Current.CancellationToken);
         }
 
         var role = new Role(RoleId.New(), $"{name}-rolle", grants);
-        await RbacStore.UpsertRoleAsync(role, CancellationToken.None);
+        await RbacStore.UpsertRoleAsync(role, TestContext.Current.CancellationToken);
         var identity = new Identity(IdentityId.New(), name, IdentityKind.Agent, [role.Id], profile?.Id);
-        await RbacStore.UpsertIdentityAsync(identity, CancellationToken.None);
-        var key = await ApiKeys.IssueAsync(identity.Id, $"{name}-key", null, CancellationToken.None);
+        await RbacStore.UpsertIdentityAsync(identity, TestContext.Current.CancellationToken);
+        var key = await ApiKeys.IssueAsync(identity.Id, $"{name}-key", null, TestContext.Current.CancellationToken);
         return (identity.Id, key.PlaintextKey);
     }
 
@@ -105,7 +106,7 @@ public sealed class GatewayFixture : WebApplicationFactory<Program>
             new UpstreamServerConfig(
                 slug, $"Echo {slug}", UpstreamTransportKind.Stdio, Enabled: true,
                 Stdio: new StdioTransportOptions(TestPaths.Executable("EchoServer"), [])),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(
             () => Supervisor.GetStatus(id)?.State == UpstreamState.Healthy,
             because: $"EchoServer '{slug}' muss Healthy werden");

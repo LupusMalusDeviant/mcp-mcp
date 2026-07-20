@@ -1,5 +1,5 @@
 using System.Diagnostics.Metrics;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Invocation;
 using Xunit;
@@ -67,7 +67,7 @@ public class MetricsTests
         var measurements = Collect(
             w => admin = w.RegisterAdmin(),
             async w => await w.Invoker.InvokeAsync(
-                InvokerTestWorld.Request(admin, w.Echo, new { message = "hi" }), CancellationToken.None),
+                InvokerTestWorld.Request(admin, w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken),
             out var world);
 
         var call = measurements.Should().ContainSingle(m => m.Instrument == "mcpmcp.tool_calls").Subject;
@@ -89,7 +89,7 @@ public class MetricsTests
         var measurements = Collect(
             w => restricted = w.RegisterAgent(),
             async w => await w.Invoker.InvokeAsync(
-                InvokerTestWorld.Request(restricted, w.Echo, new { message = "hi" }), CancellationToken.None),
+                InvokerTestWorld.Request(restricted, w.Echo, new { message = "hi" }), TestContext.Current.CancellationToken),
             out _);
 
         measurements.Should().ContainSingle(m => m.Instrument == "mcpmcp.tool_calls")

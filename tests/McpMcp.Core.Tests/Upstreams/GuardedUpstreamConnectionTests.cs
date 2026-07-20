@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Upstreams;
 using Microsoft.Extensions.Time.Testing;
@@ -19,7 +19,7 @@ public class GuardedUpstreamConnectionTests
         inner.CallGate = gate;
         var guarded = new GuardedUpstreamConnection(inner, TimeSpan.FromSeconds(30), _time);
 
-        var call = guarded.CallToolAsync("echo", TestData.EmptySchema(), CancellationToken.None);
+        var call = guarded.CallToolAsync("echo", TestData.EmptySchema(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => guarded.InFlightCount == 1);
 
         gate.TrySetResult(JsonSerializer.SerializeToElement(new { ok = true }));
@@ -39,7 +39,7 @@ public class GuardedUpstreamConnectionTests
         };
         var guarded = new GuardedUpstreamConnection(inner, TimeSpan.FromSeconds(1), _time);
 
-        var call = guarded.CallToolAsync("hang", TestData.EmptySchema(), CancellationToken.None);
+        var call = guarded.CallToolAsync("hang", TestData.EmptySchema(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => guarded.InFlightCount == 1);
         _time.Advance(TimeSpan.FromSeconds(2));
 
@@ -72,7 +72,7 @@ public class GuardedUpstreamConnectionTests
         var inner = new HangingPingConnection { Id = ServerId.New() };
         var guarded = new GuardedUpstreamConnection(inner, TimeSpan.FromSeconds(1), _time);
 
-        var ping = guarded.PingAsync(CancellationToken.None);
+        var ping = guarded.PingAsync(TestContext.Current.CancellationToken);
         _time.Advance(TimeSpan.FromSeconds(2));
 
         await ((Func<Task>)(() => ping)).Should().ThrowAsync<TimeoutException>();
@@ -84,7 +84,7 @@ public class GuardedUpstreamConnectionTests
         var guarded = new GuardedUpstreamConnection(
             new FakeUpstreamConnection { Id = ServerId.New() }, TimeSpan.FromSeconds(30), _time);
 
-        (await guarded.WaitForIdleAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).Should().BeTrue();
+        (await guarded.WaitForIdleAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken)).Should().BeTrue();
     }
 
     [Fact]
@@ -96,10 +96,10 @@ public class GuardedUpstreamConnectionTests
             CallGate = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously),
         };
         var guarded = new GuardedUpstreamConnection(inner, TimeSpan.FromMinutes(5), _time);
-        _ = guarded.CallToolAsync("hang", TestData.EmptySchema(), CancellationToken.None);
+        _ = guarded.CallToolAsync("hang", TestData.EmptySchema(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => guarded.InFlightCount == 1);
 
-        var wait = guarded.WaitForIdleAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        var wait = guarded.WaitForIdleAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
         _time.Advance(TimeSpan.FromSeconds(2));
 
         (await wait).Should().BeFalse();

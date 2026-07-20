@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Xunit;
 
@@ -24,7 +24,7 @@ public class SupervisorIntegrationTests
         };
 
         var id = await supervisor.AddAsync(
-            IntegrationSupport.StdioServer("echo", "EchoServer"), CancellationToken.None);
+            IntegrationSupport.StdioServer("echo", "EchoServer"), TestContext.Current.CancellationToken);
 
         await IntegrationSupport.WaitUntilAsync(
             () => inventoryChangedAt is not null,
@@ -54,9 +54,9 @@ public class SupervisorIntegrationTests
         };
 
         var stableId = await supervisor.AddAsync(
-            IntegrationSupport.StdioServer("stable", "EchoServer"), CancellationToken.None);
+            IntegrationSupport.StdioServer("stable", "EchoServer"), TestContext.Current.CancellationToken);
         var crashId = await supervisor.AddAsync(
-            IntegrationSupport.StdioServer("crashy", "CrashServer"), CancellationToken.None);
+            IntegrationSupport.StdioServer("crashy", "CrashServer"), TestContext.Current.CancellationToken);
 
         await IntegrationSupport.WaitUntilAsync(() =>
             supervisor.GetStatus(stableId)?.State == UpstreamState.Healthy &&
@@ -64,7 +64,7 @@ public class SupervisorIntegrationTests
 
         // Prozess hart töten: der crash-Tool-Call beendet den Server ohne Antwort.
         var crashCall = () => supervisor.GetConnection(crashId)!
-            .CallToolAsync("crash", default, CancellationToken.None);
+            .CallToolAsync("crash", default, TestContext.Current.CancellationToken);
         await crashCall.Should().ThrowAsync<Exception>("der Prozess stirbt mitten im Call");
 
         bool CrashServerWentThroughFailed()
@@ -85,7 +85,7 @@ public class SupervisorIntegrationTests
             var result = await supervisor.GetConnection(stableId)!.CallToolAsync(
                 "echo",
                 JsonSerializer.SerializeToElement(new { message = $"ping {stableCalls}" }),
-                CancellationToken.None);
+                TestContext.Current.CancellationToken);
             result.GetProperty("content")[0].GetProperty("text").GetString()
                 .Should().Be($"Echo: ping {stableCalls}", "kein Call des Nachbarn darf verloren gehen (WP1-DoD)");
             stableCalls++;
@@ -112,7 +112,7 @@ public class SupervisorIntegrationTests
 
         var supervisor = IntegrationSupport.CreateSupervisor();
         var id = await supervisor.AddAsync(
-            IntegrationSupport.StdioServer("echo", "EchoServer"), CancellationToken.None);
+            IntegrationSupport.StdioServer("echo", "EchoServer"), TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(
             () => supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 

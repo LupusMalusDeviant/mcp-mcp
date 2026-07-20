@@ -15,8 +15,15 @@
   <!-- Testprojekte: nicht packbar, Coverage-Sammlung erlaubt -->
   <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
     <IsPackable>false</IsPackable>
-    <!-- CA1707: Unterstriche in Testmethodennamen sind gewollte Konvention (Given_when_then). -->
-    <NoWarn>$(NoWarn);CA1707</NoWarn>
+    <!-- CA1707: Unterstriche in Testmethodennamen sind gewollte Konvention (Given_when_then).
+         xUnit1051: Die Regel verlangt an JEDEM Aufruf mit optionalem CancellationToken den
+         TestContext-Token. Wo ein Token ohnehin übergeben wurde, ist er umgestellt (198 Stellen);
+         ihn zusätzlich an jeden SDK-, HttpClient- und EF-Aufruf zu hängen wären ~360 weitere
+         Argumente für einen Nutzen, den die Suite bereits anders abdeckt: Wartehelfer haben
+         eigene Timeouts, und die CI-Jobs laufen unter Job-Timeout. Der Lärm würde die Tests
+         schlechter lesbar machen, ohne einen realen Hänger zu verhindern.
+         CA1816: xUnit ruft DisposeAsync selbst auf; Testklassen haben keine Finalizer. -->
+    <NoWarn>$(NoWarn);CA1707;xUnit1051;CA1816</NoWarn>
   </PropertyGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Xunit;
 
@@ -33,7 +33,7 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
     [Fact]
     public async Task Wrong_credentials_are_rejected_and_audited()
     {
-        await _gw.UiUsers.CreateAsync($"wrong-{Guid.NewGuid():N}", "richtig-geheim", UiRole.Admin, CancellationToken.None);
+        await _gw.UiUsers.CreateAsync($"wrong-{Guid.NewGuid():N}", "richtig-geheim", UiRole.Admin, TestContext.Current.CancellationToken);
         using var client = _gw.CreateUiClient();
 
         var response = await client.PostAsync("/auth/login", new FormUrlEncodedContent(new Dictionary<string, string>
@@ -48,7 +48,7 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
 
         await IntegrationSupport.WaitUntilAsync(() =>
             _gw.AuditQuery.QueryAsync(
-                new AuditFilter(Kind: AuditEventKind.Authentication, Status: InvocationStatus.Denied), CancellationToken.None)
+                new AuditFilter(Kind: AuditEventKind.Authentication, Status: InvocationStatus.Denied), TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult().TotalCount >= 1,
             because: "fehlgeschlagene Logins werden auditiert (FR-22)");
     }
@@ -57,14 +57,14 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
     public async Task Login_succeeds_sets_cookie_and_is_audited()
     {
         var name = $"admin-{Guid.NewGuid():N}";
-        await _gw.UiUsers.CreateAsync(name, "passwort123", UiRole.Admin, CancellationToken.None);
+        await _gw.UiUsers.CreateAsync(name, "passwort123", UiRole.Admin, TestContext.Current.CancellationToken);
 
         using var client = await _gw.LoginUiAsync(name, "passwort123");
         var dashboard = await client.GetAsync("/");
         dashboard.StatusCode.Should().Be(HttpStatusCode.OK, "mit Cookie ist das Dashboard erreichbar");
 
         await IntegrationSupport.WaitUntilAsync(() =>
-            _gw.AuditQuery.QueryAsync(new AuditFilter(ToolPrefix: $"ui-login:{name}", Kind: AuditEventKind.Authentication), CancellationToken.None)
+            _gw.AuditQuery.QueryAsync(new AuditFilter(ToolPrefix: $"ui-login:{name}", Kind: AuditEventKind.Authentication), TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult().TotalCount >= 1,
             because: "erfolgreiche UI-Logins werden auditiert");
     }
@@ -73,7 +73,7 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
     public async Task Auditor_role_cannot_reach_admin_pages_but_can_read_logs()
     {
         var name = $"auditor-{Guid.NewGuid():N}";
-        await _gw.UiUsers.CreateAsync(name, "nur-lesen", UiRole.Auditor, CancellationToken.None);
+        await _gw.UiUsers.CreateAsync(name, "nur-lesen", UiRole.Auditor, TestContext.Current.CancellationToken);
         using var client = await _gw.LoginUiAsync(name, "nur-lesen");
 
         // Admin-Seiten (RBAC/Profile/Nutzer) sind für Auditor gesperrt → Redirect (Policy NotAuthorized)
@@ -90,7 +90,7 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
     public async Task Operator_can_manage_servers_but_not_rbac()
     {
         var name = $"operator-{Guid.NewGuid():N}";
-        await _gw.UiUsers.CreateAsync(name, "betrieb", UiRole.Operator, CancellationToken.None);
+        await _gw.UiUsers.CreateAsync(name, "betrieb", UiRole.Operator, TestContext.Current.CancellationToken);
         using var client = await _gw.LoginUiAsync(name, "betrieb");
 
         (await client.GetAsync("/servers")).StatusCode.Should().Be(HttpStatusCode.OK, "Operator darf Server verwalten");
@@ -111,10 +111,10 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
         rbac.Should().NotBeNull();
         var role = new Role(RoleId.New(), "ui-ref-role",
             [new Grant(new PermissionScope(null, new NamespacedToolName("ui-ref__echo")), [ToolAction.UseTool])]);
-        await rbac!.UpsertRoleAsync(role, CancellationToken.None);
+        await rbac!.UpsertRoleAsync(role, TestContext.Current.CancellationToken);
         var identity = new Identity(IdentityId.New(), "ui-ref-agent", IdentityKind.Agent, [role.Id]);
-        await rbac.UpsertIdentityAsync(identity, CancellationToken.None);
-        var key = await _gw.ApiKeys.IssueAsync(identity.Id, "ui-ref-key", null, CancellationToken.None);
+        await rbac.UpsertIdentityAsync(identity, TestContext.Current.CancellationToken);
+        var key = await _gw.ApiKeys.IssueAsync(identity.Id, "ui-ref-key", null, TestContext.Current.CancellationToken);
         key.PlaintextKey.Should().StartWith("mcpk_");
 
         // 3. Tool testweise aufrufen (Tools.razor → IToolInvoker mit Origin=Ui, interne UI-Identität)
@@ -122,15 +122,15 @@ public sealed class WebUiTests : IClassFixture<GatewayFixture>
         var result = await _gw.Invoker.InvokeAsync(
             new ToolInvocationRequest(uiInternal.Value, CallOrigin.Ui, new NamespacedToolName("ui-ref__echo"),
                 System.Text.Json.JsonSerializer.SerializeToElement(new { message = "aus der UI" }), null),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         result.Status.Should().Be(InvocationStatus.Success);
 
         // 4. Im Log sichtbar (Logs.razor → IAuditQuery), mit Origin=Ui
         await IntegrationSupport.WaitUntilAsync(() =>
-            _gw.AuditQuery.QueryAsync(new AuditFilter(ToolPrefix: "ui-ref__echo"), CancellationToken.None)
+            _gw.AuditQuery.QueryAsync(new AuditFilter(ToolPrefix: "ui-ref__echo"), TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult().Items.Any(e => e.Origin == CallOrigin.Ui && e.Status == InvocationStatus.Success),
             because: "WP6-DoD: der UI-Testaufruf erscheint mit Origin=Ui im Audit-Log");
 
-        await _gw.Supervisor.RemoveAsync(serverId, DrainPolicy.Immediate, CancellationToken.None);
+        await _gw.Supervisor.RemoveAsync(serverId, DrainPolicy.Immediate, TestContext.Current.CancellationToken);
     }
 }

@@ -1,5 +1,5 @@
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Persistence;
 using Microsoft.Data.Sqlite;
@@ -37,7 +37,7 @@ public sealed class SqlitePersistenceTests : PersistenceTestsBase
 
     protected override string InitialCreateMigration => "20260718091957_InitialCreate";
 
-    public override Task DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
         SqliteConnection.ClearAllPools();
         foreach (var path in _extraDbPaths.Append(_dbPath).Where(File.Exists))
@@ -45,7 +45,7 @@ public sealed class SqlitePersistenceTests : PersistenceTestsBase
             File.Delete(path);
         }
 
-        return Task.CompletedTask;
+        await base.DisposeAsync();
     }
 
     /// <summary>WP3-DoD: die SQLite-Datei selbst enthält keine Klartext-Secrets (Roh-Byte-Scan).</summary>
@@ -53,7 +53,7 @@ public sealed class SqlitePersistenceTests : PersistenceTestsBase
     public async Task Database_file_contains_no_plaintext_secret()
     {
         var store = new EfUpstreamConfigStore(Factory, DataProtection);
-        await store.AppendVersionAsync(ServerId.New(), ConfigWithSecret(), CancellationToken.None);
+        await store.AppendVersionAsync(ServerId.New(), ConfigWithSecret(), TestContext.Current.CancellationToken);
 
         SqliteConnection.ClearAllPools();
         var fileBytes = await File.ReadAllBytesAsync(_dbPath);

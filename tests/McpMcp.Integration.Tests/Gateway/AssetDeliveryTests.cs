@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Protocol;
@@ -23,7 +23,7 @@ public sealed class AssetDeliveryTests : IClassFixture<GatewayFixture>
     public async Task Asset_is_delivered_as_prompt_with_its_content()
     {
         var name = $"skill-prompt-{Guid.NewGuid():N}";
-        await Assets.CreateAsync(name, "Ein zentral gepflegter Skill", "## Regeln\nImmer zuerst suchen.", CancellationToken.None);
+        await Assets.CreateAsync(name, "Ein zentral gepflegter Skill", "## Regeln\nImmer zuerst suchen.", TestContext.Current.CancellationToken);
         var (_, apiKey) = await _gw.SeedAdminAsync($"asset-prompt-{Guid.NewGuid():N}");
 
         await using var client = await _gw.ConnectClientAsync(apiKey);
@@ -43,8 +43,8 @@ public sealed class AssetDeliveryTests : IClassFixture<GatewayFixture>
     public async Task Asset_is_readable_as_resource_and_serves_the_latest_version()
     {
         var name = $"skill-res-{Guid.NewGuid():N}";
-        var id = await Assets.CreateAsync(name, null, "Version 1", CancellationToken.None);
-        await Assets.PublishAsync(id, "Version 2 — aktualisiert", CancellationToken.None);
+        var id = await Assets.CreateAsync(name, null, "Version 1", TestContext.Current.CancellationToken);
+        await Assets.PublishAsync(id, "Version 2 — aktualisiert", TestContext.Current.CancellationToken);
         var (_, apiKey) = await _gw.SeedAdminAsync($"asset-res-{Guid.NewGuid():N}");
 
         await using var client = await _gw.ConnectClientAsync(apiKey);
@@ -62,7 +62,7 @@ public sealed class AssetDeliveryTests : IClassFixture<GatewayFixture>
     public async Task Updating_an_asset_changes_what_agents_receive()
     {
         var name = $"skill-update-{Guid.NewGuid():N}";
-        var id = await Assets.CreateAsync(name, null, "alter Stand", CancellationToken.None);
+        var id = await Assets.CreateAsync(name, null, "alter Stand", TestContext.Current.CancellationToken);
         var (_, apiKey) = await _gw.SeedAdminAsync($"asset-upd-{Guid.NewGuid():N}");
 
         await using var client = await _gw.ConnectClientAsync(apiKey);
@@ -72,7 +72,7 @@ public sealed class AssetDeliveryTests : IClassFixture<GatewayFixture>
         before.Messages[0].Content.Should().BeOfType<TextContentBlock>().Which.Text.Should().Be("alter Stand");
 
         // Der Kern von Keyfeature 7: zentral ändern → alle Agenten bekommen den neuen Stand.
-        await Assets.PublishAsync(id, "neuer Stand", CancellationToken.None);
+        await Assets.PublishAsync(id, "neuer Stand", TestContext.Current.CancellationToken);
 
         var after = await client.GetPromptAsync(promptName);
         after.Messages[0].Content.Should().BeOfType<TextContentBlock>().Which.Text.Should().Be("neuer Stand");
@@ -97,7 +97,7 @@ public sealed class AssetDeliveryTests : IClassFixture<GatewayFixture>
             new UpstreamServerConfig(
                 AssetDelivery.Namespace, "Kollision", UpstreamTransportKind.Stdio, Enabled: true,
                 Stdio: new StdioTransportOptions("egal", [])),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
 
         await act.Should().ThrowAsync<ArgumentException>().WithMessage("*reserviert*");
     }

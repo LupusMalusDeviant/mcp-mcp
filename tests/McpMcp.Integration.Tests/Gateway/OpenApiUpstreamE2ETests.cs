@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -27,7 +27,7 @@ public sealed class OpenApiUpstreamE2ETests : IClassFixture<GatewayFixture>, IAs
 
     public OpenApiUpstreamE2ETests(GatewayFixture gw) => _gw = gw;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         _port = GetFreePort();
         var builder = WebApplication.CreateBuilder();
@@ -61,7 +61,7 @@ public sealed class OpenApiUpstreamE2ETests : IClassFixture<GatewayFixture>, IAs
         await _petApi.StartAsync();
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_petApi is not null)
         {
@@ -81,7 +81,7 @@ public sealed class OpenApiUpstreamE2ETests : IClassFixture<GatewayFixture>, IAs
                     AuthKind: OpenApiAuthKind.ApiKeyHeader,
                     Credential: ApiKeySecret,
                     ApiKeyHeaderName: ApiKeyHeader)),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(
             () => _gw.Supervisor.GetStatus(serverId)?.State == UpstreamState.Healthy,
             because: "OpenAPI-Import muss Healthy werden");
@@ -109,7 +109,7 @@ public sealed class OpenApiUpstreamE2ETests : IClassFixture<GatewayFixture>, IAs
         created.GetProperty("created").GetString().Should().Be("Bello");
 
         // Hot-Swap: entfernen wie jeder andere Server (WP5-DoD)
-        await _gw.Supervisor.RemoveAsync(serverId, DrainPolicy.Immediate, CancellationToken.None);
+        await _gw.Supervisor.RemoveAsync(serverId, DrainPolicy.Immediate, TestContext.Current.CancellationToken);
         var afterRemove = await client.PostAsync(
             "/api/v1/tools/petapi__getPet/invoke",
             new StringContent("""{"petId":1}""", Encoding.UTF8, "application/json"));
@@ -136,7 +136,7 @@ public sealed class OpenApiUpstreamE2ETests : IClassFixture<GatewayFixture>, IAs
                     "badapi", "Kaputte Spec", UpstreamTransportKind.OpenApi, Enabled: true,
                     OpenApi: new OpenApiTransportOptions(new Uri(badSpecPath)),
                     Restart: new RestartPolicy(0, TimeSpan.FromMilliseconds(100), 2.0, TimeSpan.FromSeconds(1))),
-                CancellationToken.None);
+                TestContext.Current.CancellationToken);
 
             await IntegrationSupport.WaitUntilAsync(
                 () => _gw.Supervisor.GetStatus(serverId)?.State == UpstreamState.Failed,

@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using ModelContextProtocol.Protocol;
 using Xunit;
@@ -104,7 +104,7 @@ public sealed class GatewayE2ETests : IClassFixture<GatewayFixture>
 
         // Teil 2: Server entfernen → sauberer Fehler, Gateway bleibt stabil
         var before = Volatile.Read(ref notifications);
-        await _gw.Supervisor.RemoveAsync(id, DrainPolicy.Immediate, CancellationToken.None);
+        await _gw.Supervisor.RemoveAsync(id, DrainPolicy.Immediate, TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(() => Volatile.Read(ref notifications) > before);
 
         var afterRemove = await client.CallToolAsync(
@@ -128,7 +128,7 @@ public sealed class GatewayE2ETests : IClassFixture<GatewayFixture>
 
         await IntegrationSupport.WaitUntilAsync(
             () => _gw.AuditQuery.QueryAsync(
-                new AuditFilter(Caller: identity, Status: InvocationStatus.Denied), CancellationToken.None)
+                new AuditFilter(Caller: identity, Status: InvocationStatus.Denied), TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult().TotalCount >= 1,
             because: "der Deny muss als Audit-Zeile persistiert werden (WP4-DoD, FR-22)");
     }

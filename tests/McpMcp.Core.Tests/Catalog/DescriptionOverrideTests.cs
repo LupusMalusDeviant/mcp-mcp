@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Catalog;
 using McpMcp.Core.Rbac;
@@ -72,7 +72,7 @@ public class DescriptionOverrideTests
         var before = catalog.Find(tool)!;
         before.Description.Should().Be(Verbose);
 
-        await _overrides.SetAsync(tool, "Kurz und knapp.", CancellationToken.None);
+        await _overrides.SetAsync(tool, "Kurz und knapp.", TestContext.Current.CancellationToken);
 
         var after = catalog.Find(tool)!;
         after.Description.Should().Be("Kurz und knapp.", "der Override schlägt die Upstream-Beschreibung");
@@ -87,7 +87,7 @@ public class DescriptionOverrideTests
         var raised = 0;
         catalog.Changed += (_, _) => raised++;
 
-        await _overrides.SetAsync(new NamespacedToolName("srv__chatty"), "Neu.", CancellationToken.None);
+        await _overrides.SetAsync(new NamespacedToolName("srv__chatty"), "Neu.", TestContext.Current.CancellationToken);
 
         raised.Should().BeGreaterThan(0, "Agenten müssen die neue Beschreibung über list_changed erfahren");
     }
@@ -99,7 +99,7 @@ public class DescriptionOverrideTests
         var admin = RegisterAdmin();
         var tool = new NamespacedToolName("srv__chatty");
 
-        await _overrides.SetAsync(tool, "Rechnungen exportieren.", CancellationToken.None);
+        await _overrides.SetAsync(tool, "Rechnungen exportieren.", TestContext.Current.CancellationToken);
 
         catalog.Search(admin, "Rechnungen", 10).Should().ContainSingle()
             .Which.Name.Should().Be(tool);
@@ -112,9 +112,9 @@ public class DescriptionOverrideTests
     {
         using var catalog = CreateCatalog();
         var tool = new NamespacedToolName("srv__chatty");
-        await _overrides.SetAsync(tool, "Kurz.", CancellationToken.None);
+        await _overrides.SetAsync(tool, "Kurz.", TestContext.Current.CancellationToken);
 
-        await _overrides.SetAsync(tool, null, CancellationToken.None);
+        await _overrides.SetAsync(tool, null, TestContext.Current.CancellationToken);
 
         catalog.Find(tool)!.Description.Should().Be(Verbose);
     }

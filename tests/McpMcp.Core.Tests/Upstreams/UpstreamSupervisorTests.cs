@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Upstreams;
 using Microsoft.Extensions.Time.Testing;
@@ -60,7 +60,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Add_connects_discovers_and_becomes_healthy()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
 
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
@@ -76,8 +76,15 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     {
         // FR-22: Systemereignisse müssen im Audit stehen, nicht nur im ILogger — ein Ausfall
         // ist sonst nachträglich nicht nachvollziehbar.
-        var id = await _supervisor.AddAsync(TestData.StdioConfig("lifecycle"), CancellationToken.None);
-        await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig("lifecycle"), TestContext.Current.CancellationToken);
+
+        // Auf das Audit-Ereignis warten, nicht auf den Zustand: SetState macht den Zustand
+        // sichtbar, BEVOR es den Eintrag schreibt. Wer auf Healthy wartet und dann das Audit
+        // liest, gewinnt das Rennen nur auf einer unbelasteten Maschine.
+        await TestData.WaitUntilAsync(
+            () => _audit.Events.Any(e => e.Kind == AuditEventKind.ServerLifecycle
+                && e.Detail!.Contains(nameof(UpstreamState.Healthy), StringComparison.Ordinal)),
+            because: "der Wechsel auf Healthy muss auditiert sein");
 
         var lifecycle = _audit.Events.Where(e => e.Kind == AuditEventKind.ServerLifecycle).ToList();
         lifecycle.Should().NotBeEmpty();
@@ -90,7 +97,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     {
         _connector.EnqueueConnectFailure("Upstream nicht erreichbar (Test)");
 
-        var id = await _supervisor.AddAsync(TestData.StdioConfig("kaputt"), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig("kaputt"), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Failed);
 
         _audit.Events.Should().Contain(
@@ -101,7 +108,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Add_disabled_config_stays_stopped_without_connecting()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(enabled: false), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(enabled: false), TestContext.Current.CancellationToken);
 
         // Kein Wanduhr-Warten: ein deaktivierter Server startet gar keinen Verbindungs-Loop,
         // die Aussage ist also nicht "noch nicht verbunden", sondern "verbindet nie".
@@ -115,9 +122,9 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Add_rejects_duplicate_slug()
     {
-        await _supervisor.AddAsync(TestData.StdioConfig("dup"), CancellationToken.None);
+        await _supervisor.AddAsync(TestData.StdioConfig("dup"), TestContext.Current.CancellationToken);
 
-        var act = () => _supervisor.AddAsync(TestData.StdioConfig("dup"), CancellationToken.None);
+        var act = () => _supervisor.AddAsync(TestData.StdioConfig("dup"), TestContext.Current.CancellationToken);
 
         await act.Should().ThrowAsync<ArgumentException>().WithMessage("*dup*");
     }
@@ -128,7 +135,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
         _connector.EnqueueConnectFailure();
         _connector.EnqueueConnectFailure();
 
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
 
         await TestData.WaitUntilAdvancingAsync(
             _time,
@@ -155,7 +162,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     {
         _connector.DefaultBehavior = static (_, _) => throw new IOException("dauerhaft kaputt (Test)");
 
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
 
         await TestData.WaitUntilAdvancingAsync(
             _time,
@@ -177,7 +184,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Ping_failure_marks_failed_and_auto_restarts_to_healthy()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
         _connector.Connections[0].FailPing = true;
@@ -198,7 +205,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     {
         // FR-08 verlangt Degraded als eigenen Zustand. Vorher sprang ein Ping-Fehler direkt auf
         // Failed und riss die Verbindung mit — eine Netzdelle kostete alle In-Flight-Calls.
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
         var connection = _connector.Connections[0];
 
@@ -230,7 +237,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Repeated_ping_failures_escalate_from_degraded_to_failed()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
         _connector.Connections[0].FailPing = true;
@@ -246,14 +253,14 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Remove_disposes_connection_clears_entry_and_history()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
-        await _supervisor.RemoveAsync(id, DrainPolicy.Immediate, CancellationToken.None);
+        await _supervisor.RemoveAsync(id, DrainPolicy.Immediate, TestContext.Current.CancellationToken);
 
         _supervisor.GetStatus(id).Should().BeNull();
         _supervisor.GetConnection(id).Should().BeNull();
-        (await _store.GetHistoryAsync(id, CancellationToken.None)).Should().BeEmpty();
+        (await _store.GetHistoryAsync(id, TestContext.Current.CancellationToken)).Should().BeEmpty();
         _connector.Connections[0].DisposeCount.Should().BeGreaterThan(0);
         Events.Should().Contain(e => e.Kind == UpstreamChangeKind.Removed && e.Server == id);
     }
@@ -261,16 +268,16 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Remove_with_graceful_drain_waits_for_inflight_call()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
         var gate = new TaskCompletionSource<System.Text.Json.JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         _connector.Connections[0].CallGate = gate;
         var connection = (GuardedUpstreamConnection)_supervisor.GetConnection(id)!;
-        var call = connection.CallToolAsync("echo", TestData.EmptySchema(), CancellationToken.None);
+        var call = connection.CallToolAsync("echo", TestData.EmptySchema(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => connection.InFlightCount == 1);
 
-        var remove = _supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromSeconds(5)), CancellationToken.None);
+        var remove = _supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromSeconds(5)), TestContext.Current.CancellationToken);
 
         // Die Gnadenfrist hängt an der Fake-Uhr, die hier nicht vorgestellt wird — Remove kann
         // also nur durch das Call-Ende fertig werden, und das steckt im Gate.
@@ -288,15 +295,15 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Remove_with_expired_drain_completes_anyway()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
         _connector.Connections[0].CallGate = new TaskCompletionSource<System.Text.Json.JsonElement>();
         var connection = (GuardedUpstreamConnection)_supervisor.GetConnection(id)!;
-        _ = connection.CallToolAsync("echo", TestData.EmptySchema(), CancellationToken.None);
+        _ = connection.CallToolAsync("echo", TestData.EmptySchema(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => connection.InFlightCount == 1);
 
-        var remove = _supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromSeconds(2)), CancellationToken.None);
+        var remove = _supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromSeconds(2)), TestContext.Current.CancellationToken);
         await Task.Delay(50);
         _time.Advance(TimeSpan.FromSeconds(3));
 
@@ -307,17 +314,17 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task SetEnabled_toggles_and_versions_config()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
-        await _supervisor.SetEnabledAsync(id, false, CancellationToken.None);
+        await _supervisor.SetEnabledAsync(id, false, TestContext.Current.CancellationToken);
         _supervisor.GetStatus(id)!.State.Should().Be(UpstreamState.Stopped);
         _supervisor.GetConnection(id).Should().BeNull();
 
-        await _supervisor.SetEnabledAsync(id, true, CancellationToken.None);
+        await _supervisor.SetEnabledAsync(id, true, TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
-        var history = await _store.GetHistoryAsync(id, CancellationToken.None);
+        var history = await _store.GetHistoryAsync(id, TestContext.Current.CancellationToken);
         history.Should().HaveCount(3, "Initial + Disable + Enable");
         history[^1].Config.Enabled.Should().BeTrue();
     }
@@ -325,10 +332,10 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Reconfigure_restarts_with_new_config_and_returns_new_version()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig("alt"), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig("alt"), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
-        var version = await _supervisor.ReconfigureAsync(id, TestData.StdioConfig("neu"), CancellationToken.None);
+        var version = await _supervisor.ReconfigureAsync(id, TestData.StdioConfig("neu"), TestContext.Current.CancellationToken);
 
         version.Should().Be(new ConfigVersionId(2));
         await TestData.WaitUntilAsync(
@@ -339,16 +346,16 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Rollback_restores_previous_config_as_new_version()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig("v1"), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig("v1"), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
-        await _supervisor.ReconfigureAsync(id, TestData.StdioConfig("v2"), CancellationToken.None);
+        await _supervisor.ReconfigureAsync(id, TestData.StdioConfig("v2"), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() => _connector.LastConfig?.Slug == "v2");
 
-        await _supervisor.RollbackAsync(id, new ConfigVersionId(1), CancellationToken.None);
+        await _supervisor.RollbackAsync(id, new ConfigVersionId(1), TestContext.Current.CancellationToken);
 
         await TestData.WaitUntilAsync(
             () => _supervisor.GetStatus(id)?.State == UpstreamState.Healthy && _connector.LastConfig?.Slug == "v1");
-        var history = await _store.GetHistoryAsync(id, CancellationToken.None);
+        var history = await _store.GetHistoryAsync(id, TestContext.Current.CancellationToken);
         history.Should().HaveCount(3);
         history[^1].Config.Slug.Should().Be("v1", "Rollback erzeugt eine neue Version mit altem Inhalt");
     }
@@ -356,9 +363,9 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Rollback_to_unknown_version_throws()
     {
-        var id = await _supervisor.AddAsync(TestData.StdioConfig(), CancellationToken.None);
+        var id = await _supervisor.AddAsync(TestData.StdioConfig(), TestContext.Current.CancellationToken);
 
-        var act = () => _supervisor.RollbackAsync(id, new ConfigVersionId(99), CancellationToken.None);
+        var act = () => _supervisor.RollbackAsync(id, new ConfigVersionId(99), TestContext.Current.CancellationToken);
 
         await act.Should().ThrowAsync<KeyNotFoundException>();
     }
@@ -368,9 +375,9 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     {
         var unknown = ServerId.New();
 
-        await ((Func<Task>)(() => _supervisor.RemoveAsync(unknown, DrainPolicy.Immediate, CancellationToken.None)))
+        await ((Func<Task>)(() => _supervisor.RemoveAsync(unknown, DrainPolicy.Immediate, TestContext.Current.CancellationToken)))
             .Should().ThrowAsync<KeyNotFoundException>();
-        await ((Func<Task>)(() => _supervisor.SetEnabledAsync(unknown, false, CancellationToken.None)))
+        await ((Func<Task>)(() => _supervisor.SetEnabledAsync(unknown, false, TestContext.Current.CancellationToken)))
             .Should().ThrowAsync<KeyNotFoundException>();
         _supervisor.GetStatus(unknown).Should().BeNull();
     }
@@ -378,8 +385,8 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
     [Fact]
     public async Task Crash_of_one_upstream_does_not_affect_the_other()
     {
-        var idA = await _supervisor.AddAsync(TestData.StdioConfig("stable"), CancellationToken.None);
-        var idB = await _supervisor.AddAsync(TestData.StdioConfig("flaky"), CancellationToken.None);
+        var idA = await _supervisor.AddAsync(TestData.StdioConfig("stable"), TestContext.Current.CancellationToken);
+        var idB = await _supervisor.AddAsync(TestData.StdioConfig("flaky"), TestContext.Current.CancellationToken);
         await TestData.WaitUntilAsync(() =>
             _supervisor.GetStatus(idA)?.State == UpstreamState.Healthy &&
             _supervisor.GetStatus(idB)?.State == UpstreamState.Healthy);
@@ -394,7 +401,7 @@ public sealed class UpstreamSupervisorTests : IAsyncDisposable
 
         _supervisor.GetStatus(idA)!.State.Should().Be(UpstreamState.Healthy, "Fault Isolation: Nachbar bleibt unberührt");
         var stableResult = await _supervisor.GetConnection(idA)!
-            .CallToolAsync("echo", TestData.EmptySchema(), CancellationToken.None);
+            .CallToolAsync("echo", TestData.EmptySchema(), TestContext.Current.CancellationToken);
         stableResult.ValueKind.Should().Be(System.Text.Json.JsonValueKind.Object);
     }
 }

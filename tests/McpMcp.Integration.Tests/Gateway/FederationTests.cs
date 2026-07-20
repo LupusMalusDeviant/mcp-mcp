@@ -3,7 +3,7 @@ using System.ComponentModel;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -29,7 +29,7 @@ public sealed class FederationTests : IClassFixture<GatewayFixture>, IAsyncLifet
 
     public FederationTests(GatewayFixture gw) => _gw = gw;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         _port = GetFreePort();
         var builder = WebApplication.CreateBuilder();
@@ -50,7 +50,7 @@ public sealed class FederationTests : IClassFixture<GatewayFixture>, IAsyncLifet
         await _peer.StartAsync();
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_peer is not null)
         {
@@ -65,7 +65,7 @@ public sealed class FederationTests : IClassFixture<GatewayFixture>, IAsyncLifet
             new UpstreamServerConfig(
                 "peer", "Föderierter Peer", UpstreamTransportKind.StreamableHttp, Enabled: true,
                 Http: new HttpTransportOptions(new Uri($"http://127.0.0.1:{_port}/mcp"))),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
 
         await IntegrationSupport.WaitUntilAsync(
             () => _gw.Supervisor.GetStatus(id)?.State == UpstreamState.Healthy,
@@ -78,7 +78,7 @@ public sealed class FederationTests : IClassFixture<GatewayFixture>, IAsyncLifet
         ReceivedInstanceHeaders.Should().Contain(gatewayInstance.InstanceId,
             "der Connector schickt die eigene Instanz-Kennung mit (Loop-Detection-Grundlage)");
 
-        await _gw.Supervisor.RemoveAsync(id, DrainPolicy.Immediate, CancellationToken.None);
+        await _gw.Supervisor.RemoveAsync(id, DrainPolicy.Immediate, TestContext.Current.CancellationToken);
     }
 
     [Fact]

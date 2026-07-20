@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Upstream;
 using Xunit;
@@ -30,11 +30,11 @@ public class HttpConnectorIntegrationTests
             var connection = await ConnectWithRetryAsync(connector, config);
             await using (connection)
             {
-                var inventory = await connection.DiscoverAsync(CancellationToken.None);
+                var inventory = await connection.DiscoverAsync(TestContext.Current.CancellationToken);
                 inventory.Tools.Should().ContainSingle(t => t.Name == "echo");
 
                 var result = await connection.CallToolAsync(
-                    "echo", JsonSerializer.SerializeToElement(new { message = "über HTTP" }), CancellationToken.None);
+                    "echo", JsonSerializer.SerializeToElement(new { message = "über HTTP" }), TestContext.Current.CancellationToken);
                 result.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("Echo: über HTTP");
             }
         }
@@ -56,7 +56,7 @@ public class HttpConnectorIntegrationTests
         {
             try
             {
-                return await connector.ConnectAsync(ServerId.New(), config, CancellationToken.None);
+                return await connector.ConnectAsync(ServerId.New(), config, TestContext.Current.CancellationToken);
             }
             catch (Exception ex)
             {

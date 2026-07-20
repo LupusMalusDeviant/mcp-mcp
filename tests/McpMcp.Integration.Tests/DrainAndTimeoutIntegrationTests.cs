@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using Xunit;
 
@@ -18,17 +18,17 @@ public class DrainAndTimeoutIntegrationTests
         // einem ausgelasteten CI-Runner genug Luft für seinen MCP-Roundtrip.
         var id = await supervisor.AddAsync(
             IntegrationSupport.StdioServer("slow", "SlowServer", callTimeout: TimeSpan.FromSeconds(2)),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(
             () => supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
         var connection = supervisor.GetConnection(id)!;
 
         var slowCall = () => connection.CallToolAsync(
-            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 30000 }), CancellationToken.None);
+            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 30000 }), TestContext.Current.CancellationToken);
         await slowCall.Should().ThrowAsync<TimeoutException>("2s CallTimeout gegen 30s Tool-Laufzeit");
 
         var quick = await connection.CallToolAsync(
-            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 10 }), CancellationToken.None);
+            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 10 }), TestContext.Current.CancellationToken);
         quick.GetProperty("content")[0].GetProperty("text").GetString()
             .Should().Be("Slept 10 ms", "die Verbindung übersteht einen Timeout unbeschadet");
     }
@@ -38,16 +38,16 @@ public class DrainAndTimeoutIntegrationTests
     {
         await using var supervisor = IntegrationSupport.CreateSupervisor();
         var id = await supervisor.AddAsync(
-            IntegrationSupport.StdioServer("slow", "SlowServer"), CancellationToken.None);
+            IntegrationSupport.StdioServer("slow", "SlowServer"), TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(
             () => supervisor.GetStatus(id)?.State == UpstreamState.Healthy);
 
         var hangingCall = supervisor.GetConnection(id)!.CallToolAsync(
-            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 30000 }), CancellationToken.None);
+            "sleep", JsonSerializer.SerializeToElement(new { milliseconds = 30000 }), TestContext.Current.CancellationToken);
         await Task.Delay(100);
 
         var sw = Stopwatch.StartNew();
-        await supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromMilliseconds(300)), CancellationToken.None);
+        await supervisor.RemoveAsync(id, DrainPolicy.Graceful(TimeSpan.FromMilliseconds(300)), TestContext.Current.CancellationToken);
         sw.Stop();
 
         // Obergrenze = Drain-Frist (0,3s) + SDK-interne Prozess-Shutdown-Frist (~5s) + Puffer.

@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using McpMcp.Core.Invocation;
 using Xunit;
@@ -13,7 +13,7 @@ public class MetaToolServiceTests
     private Task<ToolInvocationResult> ExecuteAsync(IdentityId caller, string metaTool, object args)
         => _w.MetaTools.ExecuteAsync(
             caller, CallOrigin.Mcp, metaTool,
-            System.Text.Json.JsonSerializer.SerializeToElement(args), CancellationToken.None);
+            System.Text.Json.JsonSerializer.SerializeToElement(args), TestContext.Current.CancellationToken);
 
     [Fact]
     public async Task Search_returns_only_visible_tools()

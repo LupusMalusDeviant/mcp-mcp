@@ -1,11 +1,10 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
-using FluentAssertions;
+using AwesomeAssertions;
 using McpMcp.Abstractions;
 using ModelContextProtocol.Client;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace McpMcp.Integration.Tests.Gateway;
 
@@ -32,16 +31,16 @@ public sealed class PerformanceBenchmarkTests : IClassFixture<GatewayFixture>
 
     private static bool Enabled => Environment.GetEnvironmentVariable("MCPMCP_RUN_BENCHMARK") == "1";
 
-    [SkippableFact]
+    [Fact]
     public async Task Nfr01_gateway_overhead_and_tools_list_under_load()
     {
-        Skip.IfNot(Enabled, "Benchmark nur mit MCPMCP_RUN_BENCHMARK=1 (Referenz-Hardware).");
+        Assert.SkipUnless(Enabled, "Benchmark nur mit MCPMCP_RUN_BENCHMARK=1 (Referenz-Hardware).");
 
         var serverId = await _gw.Supervisor.AddAsync(
             new UpstreamServerConfig(
                 "bench", "Benchmark-Upstream (100 Tools)", UpstreamTransportKind.Stdio, Enabled: true,
                 Stdio: new StdioTransportOptions(TestPaths.Executable("BulkServer"), [])),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         await IntegrationSupport.WaitUntilAsync(
             () => _gw.Supervisor.GetStatus(serverId)?.State == UpstreamState.Healthy, timeoutMs: 30000);
 
@@ -140,7 +139,7 @@ public sealed class PerformanceBenchmarkTests : IClassFixture<GatewayFixture>
                 await client.DisposeAsync();
             }
 
-            await _gw.Supervisor.RemoveAsync(serverId, DrainPolicy.Immediate, CancellationToken.None);
+            await _gw.Supervisor.RemoveAsync(serverId, DrainPolicy.Immediate, TestContext.Current.CancellationToken);
         }
     }
 
