@@ -1,6 +1,6 @@
 # ADR-0011: Secret-Erkennung als hot-swappable Guardrail im Invoker
 
-- **Status:** **Vorgeschlagen** — enthält vier offene Entscheidungen (Abschnitt „Zu entscheiden")
+- **Status:** Akzeptiert
 - **Datum:** 2026-07-20
 - **Betrifft:** ADR-0008 (Invocation-Kern), FR-24 (Redaction), NFR-01 (Latenz), NFR-04 (Secrets), NFR-10 (Lizenzen)
 
@@ -95,19 +95,39 @@ Jede Regel startet im Modus **Beobachten**: Treffer werden gezählt und auditier
 durch. Erst nach Sichtung wird scharfgeschaltet. Ohne das ist der erste Falsch-Positiv-Treffer ein
 Produktionsausfall — und die Regel wird danach nie wieder eingeschaltet.
 
-## Zu entscheiden
+## Getroffene Entscheidungen
 
-### E1 — Was passiert bei einem Treffer, je Richtung?
+### E1 — Treffer blockieren, in beide Richtungen
 
-Vorschlag, aus der Asymmetrie oben abgeleitet:
+**Entschieden: blockieren, nicht melden.** Ein Guardrail, der nur warnt, schützt nicht — er
+verlagert die Verantwortung auf jemanden, der das Log liest. Das gilt für beide Richtungen.
 
-| Richtung | Vorschlag | Begründung |
-|---|---|---|
-| Argument → Tool | **Blockieren** | Ein Fehlalarm kostet einen fehlgeschlagenen Tool-Call. Das Secret verlässt sonst die Organisation. |
-| Ergebnis → Agent | **Sichtbar maskieren** | Stilles Ersetzen ist gefährlicher als es aussieht: Der Agent rechnet mit korrupten Daten weiter und scheitert unvorhersehbar. Der Marker muss für das Modell lesbar sein („hier wurde etwas entfernt"). |
+**Wichtige Semantik in der Ergebnis-Richtung, die die Fehlermeldung tragen muss:** Der Tool-Call
+ist zu diesem Zeitpunkt **bereits ausgeführt**. Wird das Ergebnis blockiert, heißt das nicht „nichts
+ist passiert", sondern „die Aktion lief, das Resultat wird zurückgehalten". Bei einem
+schreibenden Tool (Issue anlegen, Datei schreiben, Datensatz löschen) ist der Seiteneffekt
+eingetreten. Ein Agent, der einen generischen Fehler sieht, wiederholt den Aufruf — und legt das
+Issue ein zweites Mal an.
 
-Alternative: beides nur melden. Dann bleibt der Gateway bei „protokolliert", was der Ausgangslage
-entspricht.
+Daraus folgt zwingend:
+
+- Der Fehlertext lautet sinngemäß **„Aufruf ausgeführt, Ergebnis wegen Secret-Fund zurückgehalten —
+  nicht wiederholen"**, nicht `UpstreamError`.
+- Der Befund im Audit hält fest, dass der Call **stattgefunden** hat. Sonst fehlt beim
+  Nachvollziehen genau die Zeile, die erklärt, warum ein Issue doppelt existiert.
+
+Argument-Richtung ist unkritischer: Dort wird **vor** dem Upstream blockiert, es gibt keinen
+Seiteneffekt, und der Fehlalarm kostet nur einen fehlgeschlagenen Call.
+
+**Probelauf bleibt trotzdem verpflichtend — aber nur für neue Regeln.** Das ist kein Widerspruch
+zu „blocken statt melden": Der kuratierte Startregelsatz blockt ab Werk. Wer eine *eigene* Regel
+anlegt, sieht sie zunächst im Beobachten-Modus, bis er ihre Trefferquote kennt. Eine selbstgebaute
+Regel scharf zu schalten, die man nie hat feuern sehen, ist der direkte Weg zum Produktionsausfall.
+
+Ebenso bleibt der Modus **pro Regel** einstellbar — nicht um aufzuweichen, sondern weil einzelne
+Muster bekannt unzuverlässig sind. **JWT** ist der Hauptkandidat: Header und Payload sind nur
+Base64, öffentliche ID-Tokens und abgelaufene Test-Fixtures matchen identisch. Diese eine Regel auf
+Beobachten zu stellen ist besser, als dass jemand wegen ihr das ganze Feature abschaltet.
 
 ### E2 — Freitext-Regex in der UI: ja oder eingeschränkt?
 
@@ -136,12 +156,19 @@ Optionen:
   Secret-Muster ab und schließt die Klasse aus.
 - **(c) Beides:** geführt als Standard, Freitext hinter einem ausdrücklichen Schalter.
 
-*Empfehlung: (c).* Der geführte Weg deckt den Normalfall; wer wirklich Freitext braucht, trifft
-eine sichtbare Entscheidung.
+**Entschieden: (c).** Der geführte Editor ist der Standardweg — Präfix, Zeichenklasse und Länge als
+Formularfelder, daraus wird der Regex erzeugt. Er deckt praktisch alle Secret-Muster ab und schließt
+die ganze Problemklasse aus, weil kein vom Menschen geschriebenes Muster in die Engine gelangt.
+
+Freitext liegt hinter einem ausdrücklichen Schalter und nur für die Admin-Rolle. Beim Speichern wird
+kompiliert (`NonBacktracking`), die Musterlänge begrenzt und `NotSupportedException` als
+Formularfehler angezeigt — Lookahead, Lookbehind und Backreferences kann die Engine nicht, das muss
+der Editor sofort sagen statt es im Hot Path scheitern zu lassen. Dass der Schalter eine
+Vertrauensentscheidung ist und keine technische Absicherung, steht als Hinweis daneben.
 
 ### E3 — Entropie-Heuristik in v1?
 
-**Empfehlung: nein, oder ausschließlich als Filter hinter einem Regex-Treffer.**
+**Entschieden: keine Entropie.** Weder als Detektor noch als Filter. Begründung unverändert:
 
 Belege gegen den Standalone-Einsatz — eigene Berechnung, je 2000 Stichproben:
 
@@ -156,20 +183,34 @@ Tool-Ergebnisse von Git-, Issue-, CI- und Storage-Servern bestehen. Die Studie *
 (818 Repos, 97 479 gelabelte Secrets) misst den Unterschied: Entropie **als Filter** (gitleaks)
 46 % Precision, Entropie **als Detektor** (trufflehog) **6 %**. Faktor 7,5.
 
-Für ein Gateway, das im Zweifel blockiert, ist Precision mehr wert als Recall.
+Für ein Gateway, das im Zweifel blockiert, ist Precision mehr wert als Recall — und mit der
+Entscheidung aus E1 (blockieren) wiegt das doppelt: Jeder Falsch-Positiv-Treffer ist hier kein
+Log-Eintrag, sondern ein abgebrochener Arbeitsschritt. Eine Heuristik, die auf Git-SHAs zu 100 %
+anschlägt, hätte den Gateway für jedes Git-, Issue- und CI-Tool unbrauchbar gemacht.
+
+Der Preis ist geringerer Recall: Was kein Muster hat, wird nicht gefunden. Das gehört so in die
+Betriebsdoku.
 
 ### E4 — Was gilt oberhalb der Größenobergrenze?
 
-Ein Ergebnis über der Grenze wird nicht gescannt. Dann gilt entweder „durchlassen, aber
-kennzeichnen" oder „blockieren". Ersteres ist ein blinder Fleck, letzteres bricht legitime
-Groß-Ergebnisse. *Empfehlung: durchlassen und im Audit als ungeprüft markieren* — kombiniert mit
-FR-16 (Ergebnis-Kürzung), das die Größe ohnehin begrenzen kann.
+**Entschieden: blockieren, konsistent mit E1.** Ein ungeprüftes Groß-Ergebnis durchzulassen wäre
+genau der blinde Fleck, den ein Angreifer ansteuert — Secret in eine 300-KB-Antwort einbetten und
+am Guardrail vorbeiziehen. „Safety first" heißt hier: Was nicht geprüft werden kann, passiert nicht.
+
+Die Grenze ist großzügig zu wählen (Vorschlag: 256 KB) und mit FR-16 zu kombinieren, das
+Ergebnisse ohnehin kürzen kann — dann greift die Kürzung vor der Guardrail und legitime
+Groß-Ergebnisse laufen gekürzt statt blockiert durch. Die Fehlermeldung nennt die Grenze und den
+Ausweg, damit ein Betreiber sie erhöhen oder die Kürzung einschalten kann statt zu raten.
 
 ## Konsequenzen
 
-- Der Gateway wird vom reinen Beobachter zur Kontrollinstanz. Das ist der Zweck — und zugleich ein
-  neues Ausfallrisiko: Eine falsch gesetzte Regel kann legitime Arbeit blockieren. Deshalb E1 und
-  der Pflicht-Probelauf.
+- **Der Gateway wird vom Beobachter zur Kontrollinstanz — und damit zu einem Single Point of
+  Failure für falsch-positive Treffer.** Das ist die bewusst eingegangene Kehrseite von
+  „blockieren statt melden". Abgefedert wird sie durch drei Dinge und nicht mehr: kuratierte
+  Präfix-Muster statt Heuristik (E3), Probelauf für selbstgebaute Regeln (E1), und Modus pro Regel
+  für die bekannt unzuverlässigen Muster.
+- Wer im Störungsfall schnell handeln muss, braucht einen Not-Aus. Die Guardrail ist deshalb pro
+  Regel **und** global in der UI abschaltbar — ohne Neustart, wie alles andere auch.
 - **Der Schutz ist gut, nicht vollständig.** Mustererkennung fängt, was ein Muster hat
   (`AKIA…`, `ghp_…`, `sk-ant-…`, PEM-Blöcke). Ein 32-stelliges Zufallspasswort ist von einer
   Datei-Id nicht unterscheidbar. Das gehört so in die Betriebsdoku, sonst verlässt sich jemand darauf.

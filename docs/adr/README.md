@@ -27,7 +27,7 @@ Ein Architecture Decision Record dokumentiert eine einzelne, wichtige Architektu
 | [0008](./0008-api-mcp-bridge-als-erstklassige-fassaden.md) | API↔MCP-Bridge als zwei Fassaden über gemeinsamem Invocation-Kern | Akzeptiert | 2026-07-17 | — |
 | [0009](./0009-sse-legacy-transport.md) | HTTP+SSE nur upstream unterstützen, downstream nur Streamable HTTP | Akzeptiert | 2026-07-18 | — |
 | [0010](./0010-sampling-elicitation-nicht-durchreichen.md) | Sampling/Elicitation nicht durchreichen — Korrelation strukturell nicht lösbar | Akzeptiert | 2026-07-18 | — |
-| [0011](./0011-secret-erkennung-als-guardrail.md) | Secret-Erkennung als hot-swappable Guardrail im Invoker | **Vorgeschlagen** | 2026-07-20 | — |
+| [0011](./0011-secret-erkennung-als-guardrail.md) | Secret-Erkennung als hot-swappable Guardrail im Invoker | Akzeptiert | 2026-07-20 | — |
 
 ## Beitragen
 
