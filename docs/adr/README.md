@@ -26,6 +26,7 @@ Ein Architecture Decision Record dokumentiert eine einzelne, wichtige Architektu
 | [0007](./0007-ef-core-mit-sqlite-default-postgres-optional.md) | Persistenz — EF Core mit SQLite als Default, PostgreSQL optional | Akzeptiert | 2026-07-17 | — |
 | [0008](./0008-api-mcp-bridge-als-erstklassige-fassaden.md) | API↔MCP-Bridge als zwei Fassaden über gemeinsamem Invocation-Kern | Akzeptiert | 2026-07-17 | — |
 | [0009](./0009-sse-legacy-transport.md) | HTTP+SSE nur upstream unterstützen, downstream nur Streamable HTTP | Akzeptiert | 2026-07-18 | — |
+| [0010](./0010-sampling-elicitation-nicht-durchreichen.md) | Sampling/Elicitation nicht durchreichen — Korrelation strukturell nicht lösbar | Akzeptiert | 2026-07-18 | — |
 
 ## Beitragen
 

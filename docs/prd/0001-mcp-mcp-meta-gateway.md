@@ -63,7 +63,7 @@ Priorität: **M** = Must (v1), **S** = Should (v1 wenn möglich), **C** = Could 
 - **FR-01 (M):** Das System stellt genau einen MCP-Endpoint (Streamable HTTP) bereit, über den Agenten alle freigegebenen Tools aller angeschlossenen Upstream-Server erreichen.
 - **FR-02 (M):** Das System kann sich mit Upstream-MCP-Servern über die Transporte `stdio` (lokaler Prozess) und `Streamable HTTP` (remote) verbinden. SSE-Legacy-Transport: S.
 - **FR-03 (M):** Tool-Namen werden pro Server namespaced (z. B. `github__create_issue`), sodass Namenskollisionen zwischen Servern ausgeschlossen sind.
-- **FR-04 (M):** Neben Tools werden auch Resources und Prompts der Upstream-Server durchgereicht (Aggregation mit Namespacing). Sampling/Elicitation-Durchreichung: C.
+- **FR-04 (M):** Neben Tools werden auch Resources und Prompts der Upstream-Server durchgereicht (Aggregation mit Namespacing). Sampling/Elicitation-Durchreichung: C. — *Muss-Teil erfüllt. Der Kann-Teil (Sampling/Elicitation) wird **bewusst nicht umgesetzt**, siehe [ADR-0010](../adr/0010-sampling-elicitation-nicht-durchreichen.md): Eine server-initiierte Anfrage lässt sich keinem konkreten Downstream-Agenten zuordnen — das Protokoll trägt keine Korrelation, der SDK-Handler bekommt keinen Kontext, und die Upstream-Verbindung ist geteilt. Zudem könnte der Gateway die Spezifikationszusage „ein Mensch kann immer ablehnen" architektonisch nicht einlösen.*
 - **FR-05 (S):** Der Gateway kann selbst als Upstream eines weiteren MCP-MCP dienen (Federation-fähig, keine Endlosschleifen — Loop-Detection).
 
 ### FR-Gruppe B — Hot-Swap & Lifecycle
@@ -81,14 +81,14 @@ Priorität: **M** = Must (v1), **S** = Should (v1 wenn möglich), **C** = Could 
 - **FR-13 (M):** Beide Modi sind pro Profil kombinierbar (z. B. 5 Pinned-Tools voll sichtbar + Rest lazy).
 - **FR-14 (S):** Tool-Beschreibungen können serverseitig gekürzt/überschrieben werden (Description-Override pro Tool), um Schema-Bloat einzelner Upstream-Server zu bändigen.
 - **FR-15 (S):** Das System misst und zeigt pro Profil die geschätzte Token-Last des exponierten Tool-Sets (Basis für Z-2-Nachweis).
-- **FR-16 (C):** Ergebnis-Kompression: übergroße Tool-Ergebnisse können (konfigurierbar) truncated/paginiert zurückgegeben werden.
+- **FR-16 (C):** Ergebnis-Kompression: übergroße Tool-Ergebnisse können (konfigurierbar) truncated/paginiert zurückgegeben werden. — *Umgesetzt (`MCPMCP_MAX_RESULT_CHARS`, Default aus). Gekürzte Ergebnisse bleiben gültiges JSON und tragen `_mcpmcp_truncated`; Paginierung im Sinne eines Cursors ist **nicht** enthalten — Listen werden vorne beschnitten und melden die Gesamtzahl.*
 
 ### FR-Gruppe D — API↔MCP-Bridge
 
 - **FR-17 (M):** **REST→MCP:** Jedes freigegebene Tool ist zusätzlich per REST aufrufbar (`POST /api/v1/tools/{namespacedName}/invoke`), mit denselben RBAC- und Logging-Regeln wie MCP-Calls.
 - **FR-18 (M):** Für die REST-Fassade wird eine OpenAPI-3.1-Spezifikation generiert (dynamisch aus den aktuell freigegebenen Tools).
 - **FR-19 (S):** **API→MCP:** Eine bestehende REST-API (beschrieben per OpenAPI-Dokument) kann als virtueller MCP-Server registriert werden; ihre Operationen erscheinen als Tools (Mapping: OperationId → Tool, Parameter → InputSchema, Auth per hinterlegtem Credential).
-- **FR-20 (C):** Webhook-Trigger: eingehende Webhooks können definierte Tool-Ketten auslösen.
+- **FR-20 (C):** Webhook-Trigger: eingehende Webhooks können definierte Tool-Ketten auslösen. — *Zurückgestellt (v2). Bringt zwei Konzepte ins Produkt, die es bisher nicht hat: Orchestrierung von Ketten und unauthentifizierte externe Trigger. Letzteres braucht Signaturprüfung, Replay-Schutz und eigene Rate-Limits — Angriffsfläche ohne belegten Bedarf.*
 
 ### FR-Gruppe E — Logging & Audit
 
@@ -106,7 +106,7 @@ Priorität: **M** = Must (v1), **S** = Should (v1 wenn möglich), **C** = Could 
 - **FR-29 (M):** Default-Deny: Was nicht explizit erlaubt ist, ist unsichtbar und nicht aufrufbar. Sichtbarkeit folgt Berechtigung (ein Agent sieht in `tools/list`/`search_tools` nur, was er nutzen darf).
 - **FR-30 (M):** Admin-Rollen für die Web-UI getrennt vom Agenten-RBAC (mindestens: Admin = alles; Operator = Server verwalten, keine Key-/Rollenverwaltung; Auditor = nur Logs lesen).
 - **FR-31 (S):** Zeitliche/quantitative Schranken pro Rolle: Rate-Limits (Calls/min) und optionale Gültigkeitsfenster für Keys.
-- **FR-32 (C):** Approval-Flows: bestimmte Tools erfordern menschliche Freigabe pro Call (Queue in der Web-UI).
+- **FR-32 (C):** Approval-Flows: bestimmte Tools erfordern menschliche Freigabe pro Call (Queue in der Web-UI). — *Zurückgestellt (v2), inhaltlich der wertvollste offene Punkt. Das Problem ist nicht die Queue, sondern der **blockierende Call**: Ein Agent hinge minutenlang in `tools/call`, während der Call-Timeout (FR-09) genau das verhindern soll. Braucht ein Design (Ablehnen mit Wiederholungshinweis? Polling?) und eine eigene ADR vor der Umsetzung.*
 
 ### FR-Gruppe G — Web-UI
 
@@ -121,7 +121,7 @@ Priorität: **M** = Must (v1), **S** = Should (v1 wenn möglich), **C** = Could 
 
 - **FR-39 (M):** Mehrere Agenten können gleichzeitig verbunden sein; Sessions sind isoliert (eigene Identität, eigenes Profil, eigene Subscriptions).
 - **FR-40 (S):** **Zentrale Asset-Verteilung:** Der Gateway kann versionierte Text-Assets (Skills/Prompts/Instructions) verwalten und Agenten als MCP-Prompts/Resources bereitstellen — ein zentraler Ort, von dem sich alle Agenten Skills ziehen.
-- **FR-41 (C):** Konfigurations-Push: Generierung fertiger Client-Config-Snippets (z. B. `claude mcp add …`, JSON für andere Clients) pro Identität aus der Web-UI.
+- **FR-41 (C):** Konfigurations-Push: Generierung fertiger Client-Config-Snippets (z. B. `claude mcp add …`, JSON für andere Clients) pro Identität aus der Web-UI. — *Umgesetzt. Die Snippets erscheinen beim Ausstellen eines API-Keys, also genau dann, wenn der Key einmalig sichtbar ist.*
 
 ## 6. Nicht-funktionale Anforderungen
 
