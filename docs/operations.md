@@ -35,6 +35,67 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `MCPMCP_AUDIT_DEBUG_PAYLOADS` | *(aus)* | `1`/`true` schaltet den Debug-Modus des Audits ein (siehe [Audit-Debug-Modus](#audit-debug-modus)) |
 | `MCPMCP_AUDIT_RETENTION_DAYS` | `30` | Aufbewahrung der Audit-Ereignisse in Tagen; ältere werden täglich gelöscht (FR-25) |
 | `MCPMCP_MAX_RESULT_CHARS` | *(aus)* | Kürzt Tool-Ergebnisse oberhalb dieser Zeichenzahl (FR-16, siehe [Ergebnis-Kompression](#ergebnis-kompression)) |
+| `MCPMCP_GUARD_ENABLED` | `1` | `0`/`false` schaltet die Secret-Guardrail global ab (Not-Aus) |
+| `MCPMCP_GUARD_MAX_SCAN_CHARS` | `262144` | Nutzlasten darüber werden nicht geprüft und **abgewiesen** |
+| `MCPMCP_GUARD_ALLOW_CUSTOM_PATTERNS` | *(aus)* | Erlaubt Admins eigene Regex in der UI (siehe [Guardrails](#guardrails)) |
+
+## Guardrails
+
+Der Gateway prüft Tool-**Argumente** und Tool-**Ergebnisse** auf Zugangsdaten
+([ADR-0011](adr/0011-secret-erkennung-als-guardrail.md)). Verwaltung unter **Guardrails** in der
+Web-UI: Regeln lassen sich pro Stück ein- und ausschalten, zwischen *Blockieren* und *Beobachten*
+umstellen und ergänzen — alles zur Laufzeit, ohne Neustart.
+
+Die wichtigere Richtung ist **Ergebnis → Agent**: Ein Tool, das eine `.env`, ein Kubernetes-Secret
+oder eine Datenbankzeile liefert, schiebt den Wert sonst ins Kontextfenster des Modells — und von
+dort in dessen Logs und Folgeantworten.
+
+### Was beim Blockieren passiert
+
+| Richtung | Verhalten |
+|---|---|
+| Argumente | Der Aufruf wird **vor** dem Upstream abgebrochen. Kein Seiteneffekt. |
+| Ergebnis | Der Aufruf **ist bereits gelaufen**; nur das Ergebnis wird zurückgehalten. |
+
+Der zweite Fall ist der wichtige: Bei einem schreibenden Tool ist die Aktion eingetreten. Die
+Fehlermeldung sagt das ausdrücklich und weist darauf hin, den Aufruf **nicht** zu wiederholen —
+sonst legt ein Agent dasselbe Issue ein zweites Mal an. Im Audit trägt der Vorgang den eigenen
+Status `GuardBlocked` und ist damit von einem RBAC-`Denied` unterscheidbar.
+
+### Grenzen — bitte lesen, bevor man sich darauf verlässt
+
+Erkannt wird, was ein **Muster** hat: `AKIA…`, `ghp_…`, `sk-ant-…`, PEM-Blöcke, Slack-Webhooks.
+**Nicht** erkannt wird, was keins hat — ein 32-stelliges Zufallspasswort ist von einer Datei-Id
+nicht zu unterscheiden. Entropie-Heuristik ist bewusst nicht eingebaut: Sie schlägt auf
+Git-Commit-SHAs und UUIDs praktisch zu 100 % an, und unter „blockieren" wäre jeder Fehlalarm ein
+abgebrochener Arbeitsschritt statt einer Logzeile.
+
+Die Guardrail ist damit eine **zusätzliche Schicht**, kein Ersatz dafür, Zugangsdaten aus
+Tool-Ergebnissen herauszuhalten.
+
+Zwei weitere Punkte:
+
+- **Befunde enthalten nie den gefundenen Wert.** Protokolliert werden Regel-Id, Fingerabdruck
+  (Hash), Position und Länge. Eine Secret-Erkennung, die ihre Funde im Klartext loggt, kopiert
+  Secrets in ein zweites und meist schwächer geschütztes System.
+- **Über der Prüfgrenze wird abgewiesen**, nicht durchgelassen — sonst wäre die Grenze genau der
+  blinde Fleck, den man ansteuert. Wer große Ergebnisse erwartet, kombiniert das mit
+  `MCPMCP_MAX_RESULT_CHARS`: Die Kürzung greift vorher, und das gekürzte Ergebnis läuft durch.
+
+### Eigene Regeln
+
+Der **geführte Editor** ist der Normalfall: Präfix, Zeichenart und Längenbereich als Felder,
+daraus wird das Muster erzeugt. Das deckt praktisch alle Token-Formate ab.
+
+Freitext-Regex ist standardmäßig **aus** und über `MCPMCP_GUARD_ALLOW_CUSTOM_PATTERNS=1`
+einschaltbar. Das ist eine bewusste Vertrauensentscheidung: .NET bietet laut Microsoft keine
+Sicherheitsgrenze gegen bösartige Muster — auch die hier verwendete backtracking-freie Engine
+schützt gegen teure *Eingaben*, nicht gegen bösartige *Muster*. Wer den Schalter setzt, erlaubt
+Admins, Rechenzeit im Gateway-Prozess zu verbrauchen.
+
+Neue eigene Regeln starten immer im Modus **Beobachten**. Erst nach Sichtung der Treffer auf
+*Blockieren* stellen — eine Regel scharfzuschalten, die man nie hat feuern sehen, bricht im
+Zweifel produktive Arbeit ab.
 
 ## Ergebnis-Kompression
 

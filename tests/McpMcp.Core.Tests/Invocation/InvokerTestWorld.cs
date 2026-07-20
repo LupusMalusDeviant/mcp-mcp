@@ -98,6 +98,11 @@ internal sealed class InvokerTestWorld
     public ToolInvoker WithAuditOptions(AuditOptions options)
         => new(Authorization, RateLimiter, Catalog, Supervisor, Audit, Redaction, Time, logger: null, options);
 
+    /// <summary>Invoker mit aktiver Inhaltsprüfung (ADR-0011).</summary>
+    public ToolInvoker WithGuard(IContentGuard guard, GuardOptions? options = null)
+        => new(Authorization, RateLimiter, Catalog, Supervisor, Audit, Redaction, Time,
+            logger: null, auditOptions: null, compression: null, guard: guard, guardOptions: options);
+
     public IdentityId RegisterAgent(params Grant[] grants)
     {
         var role = new Role(RoleId.New(), "rolle", grants);

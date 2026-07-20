@@ -124,6 +124,9 @@ internal sealed class FakeUpstreamConnection : IUpstreamConnection
     /// <summary>Wenn gesetzt, wirft CallToolAsync diese Exception.</summary>
     public Exception? CallException { get; set; }
 
+    /// <summary>Wenn gesetzt, liefert CallToolAsync dieses JSON statt der Standardantwort.</summary>
+    public string? ResultOverride { get; set; }
+
     public string? LastToolName { get; private set; }
 
     public async Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct)
@@ -138,6 +141,11 @@ internal sealed class FakeUpstreamConnection : IUpstreamConnection
         {
             await using var registration = ct.Register(() => gate.TrySetCanceled(ct)).ConfigureAwait(false);
             return await gate.Task.ConfigureAwait(false);
+        }
+
+        if (ResultOverride is { } json)
+        {
+            return JsonSerializer.Deserialize<JsonElement>(json);
         }
 
         // Das token-Feld ist Absicht: Ergebnis-Payloads tragen genauso Secrets wie Argumente,

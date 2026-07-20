@@ -21,6 +21,15 @@ public enum InvocationStatus
     Timeout = 3,
     ValidationFailed = 4,
     ToolNotFound = 5,
+
+    /// <summary>
+    /// Die Inhaltsprüfung hat das Ergebnis zurückgehalten (ADR-0011). Bewusst nicht
+    /// <see cref="Denied"/>: Der Upstream-Call ist zu diesem Zeitpunkt bereits gelaufen, der
+    /// Seiteneffekt also eingetreten. Wer im Audit später fragt, warum ein Issue doppelt
+    /// existiert, muss genau diesen Unterschied sehen können. Wert am Ende — die Zahlen liegen
+    /// persistiert in der DB.
+    /// </summary>
+    GuardBlocked = 6,
 }
 
 public sealed record ToolInvocationRequest(

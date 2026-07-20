@@ -35,6 +35,8 @@ public sealed class McpMcpDbContext : DbContext
 
     public DbSet<RedactionRuleRow> RedactionRules => Set<RedactionRuleRow>();
 
+    public DbSet<GuardRuleRow> GuardRules => Set<GuardRuleRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ConfigVersionRow>(e =>
@@ -110,6 +112,15 @@ public sealed class McpMcpDbContext : DbContext
             e.HasKey(r => r.Tool);
             e.Property(r => r.Tool).HasMaxLength(300);
             e.Property(r => r.Patterns).IsRequired();
+        });
+
+        modelBuilder.Entity<GuardRuleRow>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Id).HasMaxLength(100);
+            e.Property(r => r.Description).IsRequired().HasMaxLength(300);
+            e.Property(r => r.Pattern).IsRequired().HasMaxLength(1000);
+            e.Property(r => r.Keyword).HasMaxLength(100);
         });
 
         // Provider-neutral: Zeitstempel als UTC-Ticks (bigint). SQLite kann DateTimeOffset weder
@@ -274,6 +285,27 @@ public sealed class RedactionRuleRow
     public string Tool { get; set; } = string.Empty;
 
     public string Patterns { get; set; } = string.Empty;
+}
+
+/// <summary>Erkennungsregel der Secret-Guardrail (ADR-0011).</summary>
+public sealed class GuardRuleRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string Description { get; set; } = string.Empty;
+
+    public string Pattern { get; set; } = string.Empty;
+
+    /// <summary>Vorfilter; null bedeutet, dass der Regex immer ausgeführt wird.</summary>
+    public string? Keyword { get; set; }
+
+    public int Direction { get; set; }
+
+    public int Mode { get; set; }
+
+    public bool Enabled { get; set; } = true;
+
+    public bool IsCustom { get; set; }
 }
 
 /// <summary>Versioniertes Text-Asset (Skill/Prompt/Instruction, FR-40, WP6.4). Append-only pro Version.</summary>

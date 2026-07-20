@@ -1,4 +1,5 @@
 using McpMcp.Abstractions;
+using McpMcp.Core.Guardrails;
 using McpMcp.Core.Upstreams;
 using McpMcp.Persistence;
 using McpMcp.Persistence.Audit;
@@ -20,6 +21,7 @@ public sealed partial class GatewayStartupService : IHostedService
     private readonly PersistentRbacStore _rbacStore;
     private readonly ToolDescriptionOverrideStore _descriptionOverrides;
     private readonly RedactionRuleStore _redactionRules;
+    private readonly GuardRuleStore _guardRules;
     private readonly IApiKeyService _apiKeys;
     private readonly IUiUserService _uiUsers;
     private readonly McpMcp.Web.UiInternalIdentity _uiInternal;
@@ -33,6 +35,7 @@ public sealed partial class GatewayStartupService : IHostedService
         PersistentRbacStore rbacStore,
         ToolDescriptionOverrideStore descriptionOverrides,
         RedactionRuleStore redactionRules,
+        GuardRuleStore guardRules,
         IApiKeyService apiKeys,
         IUiUserService uiUsers,
         McpMcp.Web.UiInternalIdentity uiInternal,
@@ -45,6 +48,7 @@ public sealed partial class GatewayStartupService : IHostedService
         _rbacStore = rbacStore;
         _descriptionOverrides = descriptionOverrides;
         _redactionRules = redactionRules;
+        _guardRules = guardRules;
         _apiKeys = apiKeys;
         _uiUsers = uiUsers;
         _uiInternal = uiInternal;
@@ -61,6 +65,9 @@ public sealed partial class GatewayStartupService : IHostedService
         await _rbacStore.LoadAsync(cancellationToken);
         await _descriptionOverrides.LoadAsync(cancellationToken);
         await _redactionRules.LoadAsync(cancellationToken);
+        // Beim allerersten Start den kuratierten Regelsatz einsaeen; danach ist die DB massgeblich,
+        // damit ein abgeschaltetes Muster abgeschaltet bleibt (ADR-0011).
+        await _guardRules.LoadAsync(BuiltInGuardRules.All, cancellationToken);
         await BootstrapAdminIfEmptyAsync(cancellationToken);
         await EnsureUiInternalIdentityAsync(cancellationToken);
         await BootstrapUiAdminIfEmptyAsync(cancellationToken);

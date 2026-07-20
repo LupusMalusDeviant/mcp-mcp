@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Json.Schema;
 using McpMcp.Abstractions;
+using McpMcp.Core.Guardrails;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -32,6 +33,8 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     private readonly ILogger<ToolInvoker> _logger;
     private readonly AuditOptions _auditOptions;
     private readonly ResultCompressionOptions _compression;
+    private readonly IContentGuard? _guard;
+    private readonly GuardOptions _guardOptions;
     private readonly Counter<long> _calls;
     private readonly Histogram<double> _duration;
 
@@ -45,7 +48,9 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         TimeProvider? timeProvider = null,
         ILogger<ToolInvoker>? logger = null,
         AuditOptions? auditOptions = null,
-        ResultCompressionOptions? compression = null)
+        ResultCompressionOptions? compression = null,
+        IContentGuard? guard = null,
+        GuardOptions? guardOptions = null)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(rateLimiter);
@@ -63,6 +68,8 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         _logger = logger ?? NullLogger<ToolInvoker>.Instance;
         _auditOptions = auditOptions ?? new AuditOptions();
         _compression = compression ?? new ResultCompressionOptions();
+        _guard = guard;
+        _guardOptions = guardOptions ?? new GuardOptions();
         _calls = Meter.CreateCounter<long>("mcpmcp.tool_calls", description: "Tool-Calls durch den Gateway");
         _duration = Meter.CreateHistogram<double>("mcpmcp.tool_call_duration", unit: "ms");
     }
@@ -145,6 +152,13 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
             return Fail(InvocationStatus.UpstreamError, $"'{entry.Name}' ist kein gültiger Namespaced-Name.", started);
         }
 
+        // Guardrail ausgehend (ADR-0011): VOR dem Upstream — hier gibt es noch keinen
+        // Seiteneffekt, ein Treffer kostet nur den Call.
+        if (Guard(request.Arguments, GuardDirection.Outbound) is { } outboundBlock)
+        {
+            return Fail(InvocationStatus.Denied, outboundBlock, started);
+        }
+
         using var overrideCts = request.TimeoutOverride is { } t
             ? new CancellationTokenSource(t, _time)
             : null;
@@ -159,11 +173,21 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
                 .ConfigureAwait(false);
 
             // FR-16: Kürzen erst hier, nach dem Upstream-Call — das Audit soll die tatsächlich
-            // gelieferte Größe festhalten, nicht die gekürzte.
+            // gelieferte Größe festhalten, nicht die gekürzte. Die Kürzung läuft VOR der
+            // Guardrail, damit legitime Groß-Ergebnisse gekürzt statt blockiert durchgehen.
             var (compressed, truncation) = ResultCompressor.Compress(content, _compression);
             if (truncation is not null)
             {
                 Log.ResultTruncated(_logger, request.Tool.Value, truncation.OriginalChars, truncation.TruncatedChars);
+            }
+
+            // Guardrail eingehend (ADR-0011): Der Call ist an dieser Stelle bereits gelaufen.
+            // Deshalb GuardBlocked und nicht Denied — der Status muss unterscheidbar bleiben,
+            // damit im Audit erkennbar ist, dass der Seiteneffekt eingetreten ist.
+            if (Guard(compressed, GuardDirection.Inbound) is { } inboundBlock)
+            {
+                return new ToolInvocationResult(
+                    InvocationStatus.GuardBlocked, null, inboundBlock, Elapsed(started), truncation);
             }
 
             return new ToolInvocationResult(
@@ -230,6 +254,46 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         }
     }
 
+    /// <summary>
+    /// Führt die Inhaltsprüfung aus und liefert die Fehlermeldung, wenn blockiert wird — sonst null.
+    /// Beobachtete Treffer landen im Log, ohne den Call zu stoppen (Probelauf, ADR-0011).
+    /// </summary>
+    private string? Guard(JsonElement payload, GuardDirection direction)
+    {
+        if (_guard is null || payload.ValueKind is JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        var raw = payload.GetRawText();
+        if (raw.Length > _guardOptions.MaxScanChars)
+        {
+            // Ungeprüft heißt blockiert (ADR-0011, E4): Ein Groß-Ergebnis durchzulassen wäre der
+            // blinde Fleck, den ein Angreifer ansteuert.
+            Log.GuardPayloadTooLarge(_logger, direction.ToString(), raw.Length, _guardOptions.MaxScanChars);
+            return GuardMessages.TooLarge(raw.Length, _guardOptions.MaxScanChars);
+        }
+
+        var verdict = _guard.Inspect(raw, direction);
+        if (verdict.Findings.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var finding in verdict.Findings)
+        {
+            // Nur Regel-Id und Fingerabdruck — nie der Fund selbst.
+            Log.GuardFinding(
+                _logger, finding.RuleId, direction.ToString(), finding.Mode.ToString(), finding.Fingerprint);
+        }
+
+        return verdict.Blocked
+            ? direction == GuardDirection.Outbound
+                ? GuardMessages.Outbound(verdict.Findings)
+                : GuardMessages.Inbound(verdict.Findings)
+            : null;
+    }
+
     private void Audit(ToolInvocationRequest request, CatalogEntry? entry, ToolInvocationResult result)
     {
         var redacted = _redaction.RedactArguments(request.Tool, request.Arguments);
@@ -274,5 +338,14 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         [LoggerMessage(Level = LogLevel.Information,
             Message = "Ergebnis von {Tool} gekürzt: {OriginalChars} → {TruncatedChars} Zeichen (FR-16).")]
         public static partial void ResultTruncated(ILogger logger, string tool, int originalChars, int truncatedChars);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Guardrail {Mode}: Regel {RuleId} griff {Direction}, Fingerabdruck {Fingerprint} (ADR-0011).")]
+        public static partial void GuardFinding(
+            ILogger logger, string ruleId, string direction, string mode, string fingerprint);
+
+        [LoggerMessage(Level = LogLevel.Warning,
+            Message = "Guardrail: Nutzlast {Direction} mit {Chars} Zeichen über der Prüfgrenze {Limit} — nicht durchgelassen.")]
+        public static partial void GuardPayloadTooLarge(ILogger logger, string direction, int chars, int limit);
     }
 }

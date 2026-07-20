@@ -1,6 +1,7 @@
 using McpMcp.Abstractions;
 using McpMcp.Core.Audit;
 using McpMcp.Core.Catalog;
+using McpMcp.Core.Guardrails;
 using McpMcp.Core.Invocation;
 using McpMcp.Core.Rbac;
 using McpMcp.Core.Upstreams;
@@ -140,6 +141,31 @@ builder.Services.AddSingleton<IAuditSink>(sp => sp.GetRequiredService<ChannelAud
 builder.Services.AddSingleton<AuditBatchWriter>();
 builder.Services.AddSingleton<IAuditQuery, EfAuditQuery>();
 builder.Services.AddSingleton<AuditRetentionJob>();
+// ── Guardrail: Secret-Erkennung (ADR-0011) ───────────────────────────────────
+builder.Services.AddSingleton(new GuardOptions
+{
+    Enabled = Environment.GetEnvironmentVariable("MCPMCP_GUARD_ENABLED") is not ("0" or "false"),
+    MaxScanChars = int.TryParse(
+        Environment.GetEnvironmentVariable("MCPMCP_GUARD_MAX_SCAN_CHARS"),
+        NumberStyles.Integer, CultureInfo.InvariantCulture, out var scanChars) && scanChars > 0
+        ? scanChars
+        : 256 * 1024,
+    // Freitext-Regex ist eine Vertrauensentscheidung, keine technische Absicherung (ADR-0011, E2):
+    // .NET bietet laut Microsoft keine Sicherheitsgrenze gegen bösartige Muster. Default aus.
+    AllowCustomPatterns = Environment.GetEnvironmentVariable("MCPMCP_GUARD_ALLOW_CUSTOM_PATTERNS") is "1" or "true",
+});
+builder.Services.AddSingleton<GuardRuleStore>();
+builder.Services.AddSingleton<IGuardRuleStore>(sp => sp.GetRequiredService<GuardRuleStore>());
+builder.Services.AddSingleton(sp =>
+{
+    var store = sp.GetRequiredService<GuardRuleStore>();
+    var guard = new SecretGuard(store.All, sp.GetRequiredService<GuardOptions>());
+    // Hot-swappable: Regeländerungen bauen die Regex neu, ohne Neustart.
+    store.Changed += (_, _) => guard.Reload(store.All);
+    return guard;
+});
+builder.Services.AddSingleton<IContentGuard>(sp => sp.GetRequiredService<SecretGuard>());
+
 builder.Services.AddSingleton<RedactionRuleStore>();
 builder.Services.AddSingleton<IRedactionRules>(sp => sp.GetRequiredService<RedactionRuleStore>());
 builder.Services.AddSingleton<RedactionService>(sp => new RedactionService(sp.GetRequiredService<IRedactionRules>()));

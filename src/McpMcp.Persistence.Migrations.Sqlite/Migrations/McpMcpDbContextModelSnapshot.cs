@@ -163,6 +163,43 @@ namespace McpMcp.Persistence.Migrations.Sqlite.Migrations
                     b.ToTable("ConfigVersions");
                 });
 
+            modelBuilder.Entity("McpMcp.Persistence.GuardRuleRow", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Direction")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsCustom")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Keyword")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Mode")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Pattern")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("GuardRules");
+                });
+
             modelBuilder.Entity("McpMcp.Persistence.IdentityRow", b =>
                 {
                     b.Property<Guid>("Id")
