@@ -6,6 +6,7 @@
 @inject TimeProvider Time
 @inject AuthenticationStateProvider AuthState
 @inject IUpstreamSupervisor Supervisor
+@inject NavigationManager Nav
 
 <h1>RBAC-Verwaltung</h1>
 <p class="muted">Agenten-Identitäten, Rollen mit Grants und API-Keys (FR-27/28/36).</p>
@@ -127,6 +128,22 @@
             <div class="card" style="background:var(--panel2)">
                 <strong class="msg-ok">Neuer Key (wird nie wieder angezeigt):</strong>
                 <pre>@_newKey</pre>
+
+                @* FR-41: Fertige Konfiguration statt Abtippen — der Key ist genau jetzt sichtbar. *@
+                <strong>Agenten anbinden</strong>
+                <p class="muted" style="margin:.3rem 0">
+                    Enthält den Key im Klartext. Sinnvollerweise direkt übernehmen, nicht in einen
+                    Chat oder ein Ticket kopieren.
+                </p>
+                @foreach (var snippet in _snippets)
+                {
+                    <label>@snippet.Client</label>
+                    <pre class="mono">@snippet.Content</pre>
+                }
+                @if (_snippetHint is not null)
+                {
+                    <p class="muted">@_snippetHint</p>
+                }
             </div>
         }
         <div class="table-wrap">
@@ -170,6 +187,8 @@
     private string _idName = ""; private string _idProfile = ""; private readonly HashSet<RoleId> _idRoles = []; private bool _idOk; private string? _idMsg;
     private IdentityId? _keyIdentity; private string _keyLabel = ""; private string? _newKey;
     private DateTime? _keyExpiresAt;
+    private IReadOnlyList<ClientConfigSnippet> _snippets = [];
+    private string? _snippetHint;
 
     protected override Task OnInitializedAsync() => Reload();
 
@@ -282,7 +301,9 @@
 
     private async Task SelectForKey(IdentityId id)
     {
-        _keyIdentity = id; _newKey = null;
+        // Snippets mit zurücksetzen — sie tragen den Klartext-Key und dürfen nicht stehen bleiben,
+        // wenn man zu einer anderen Identität wechselt.
+        _keyIdentity = id; _newKey = null; _snippets = []; _snippetHint = null;
         _keys = await ApiKeys.ListAsync(id, CancellationToken.None);
     }
 
@@ -301,7 +322,26 @@
             Audit, Time, await UserAsync(), AuditEventKind.RbacChanged,
             $"key-issued:{_keyLabel}{(expiresAt is null ? "" : $" (bis {expiresAt:yyyy-MM-dd})")}");
         _newKey = issued.PlaintextKey; _keyLabel = ""; _keyExpiresAt = null;
+        BuildSnippets(issued.PlaintextKey);
         _keys = await ApiKeys.ListAsync(_keyIdentity.Value, CancellationToken.None);
+    }
+
+    /// <summary>FR-41: fertige Client-Konfiguration zum neu ausgestellten Key.</summary>
+    private void BuildSnippets(string apiKey)
+    {
+        _snippetHint = null;
+        var baseAddress = new Uri(Nav.BaseUri);
+
+        // Die UI-Adresse ist nicht zwingend die, unter der Agenten den Gateway erreichen —
+        // hinter einem Reverse-Proxy oder im Container ist sie es oft nicht. Lieber einmal
+        // darauf hinweisen, als dass jemand eine localhost-Config an einen Server verteilt.
+        if (baseAddress.IsLoopback)
+        {
+            _snippetHint = "Hinweis: Die Adresse stammt aus dem Browser-Aufruf und zeigt auf localhost — "
+                + "für Agenten auf anderen Rechnern die extern erreichbare Adresse eintragen.";
+        }
+
+        _snippets = ClientConfigSnippets.Build(baseAddress, IdentityName(_keyIdentity!.Value), apiKey);
     }
 
     private async Task RevokeKey(Guid keyId)

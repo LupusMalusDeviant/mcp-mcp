@@ -34,6 +34,33 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(nicht gesetzt)* | Ziel für den Metriken-Export (siehe [Metriken](#metriken)) |
 | `MCPMCP_AUDIT_DEBUG_PAYLOADS` | *(aus)* | `1`/`true` schaltet den Debug-Modus des Audits ein (siehe [Audit-Debug-Modus](#audit-debug-modus)) |
 | `MCPMCP_AUDIT_RETENTION_DAYS` | `30` | Aufbewahrung der Audit-Ereignisse in Tagen; ältere werden täglich gelöscht (FR-25) |
+| `MCPMCP_MAX_RESULT_CHARS` | *(aus)* | Kürzt Tool-Ergebnisse oberhalb dieser Zeichenzahl (FR-16, siehe [Ergebnis-Kompression](#ergebnis-kompression)) |
+
+## Ergebnis-Kompression
+
+Ein einzelnes umfangreiches Tool-Ergebnis kann die Token-Ersparnis der Profile wieder auffressen.
+`MCPMCP_MAX_RESULT_CHARS` begrenzt das:
+
+```
+MCPMCP_MAX_RESULT_CHARS=20000
+```
+
+Standardmäßig **aus** — Kürzen ist verlustbehaftet, das soll niemand unbemerkt bekommen. Wenn es
+greift, bleibt das Ergebnis gültiges JSON und trägt das Feld `_mcpmcp_truncated: true` samt Hinweis,
+wie viel fehlt. Bei Listen bleiben die vorderen Einträge erhalten und `totalItems` nennt die
+Gesamtzahl; bei einzelnen großen Objekten ist der Ausschnitt ausdrücklich als nicht parsbar
+gekennzeichnet. Das Audit hält weiterhin die **ungekürzte** Größe fest, damit man die Kürzung
+nachträglich einordnen kann.
+
+## Agenten anbinden (Config-Snippets)
+
+Beim Ausstellen eines API-Keys zeigt die Web-UI unter **RBAC → Keys** fertige
+Konfigurations-Snippets für Claude Code und für JSON-basierte MCP-Clients (FR-41) — inklusive
+Endpunkt und Authorization-Header. Sie enthalten den Key im Klartext und erscheinen nur einmal,
+zusammen mit dem Key selbst.
+
+Läuft die UI hinter einem Reverse-Proxy, prüfe die Adresse im Snippet: sie stammt aus dem
+Browser-Aufruf und ist nicht zwingend die, unter der Agenten den Gateway erreichen.
 
 Für Upstream-Server, die noch kein Streamable HTTP sprechen, fällt der Gateway automatisch auf
 den abgelösten HTTP+SSE-Transport zurück; abschaltbar je Server über den Schalter im Anlege-Formular

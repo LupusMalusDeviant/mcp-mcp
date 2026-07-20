@@ -145,6 +145,15 @@ builder.Services.AddSingleton<IRedactionRules>(sp => sp.GetRequiredService<Redac
 builder.Services.AddSingleton<RedactionService>(sp => new RedactionService(sp.GetRequiredService<IRedactionRules>()));
 builder.Services.AddSingleton<IRedactionService>(sp => sp.GetRequiredService<RedactionService>());
 
+// FR-16: Kürzung übergroßer Ergebnisse. Default aus — sie ist verlustbehaftet, das soll niemand
+// unbemerkt bekommen. Wer sie einschaltet, begrenzt damit den Token-Hunger einzelner Tools.
+var maxResultChars = int.TryParse(
+    Environment.GetEnvironmentVariable("MCPMCP_MAX_RESULT_CHARS"),
+    NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedChars) && parsedChars > 0
+    ? parsedChars
+    : 0;
+builder.Services.AddSingleton(new ResultCompressionOptions(maxResultChars));
+
 // FR-24: Ergebnis-Payloads im Audit sind ausdrücklich zu aktivieren, nie Default (NFR-04).
 builder.Services.AddSingleton(new AuditOptions(
     CaptureResponsePayloads: Environment.GetEnvironmentVariable("MCPMCP_AUDIT_DEBUG_PAYLOADS") is "1" or "true"));

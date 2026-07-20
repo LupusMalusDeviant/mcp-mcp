@@ -31,6 +31,7 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     private readonly TimeProvider _time;
     private readonly ILogger<ToolInvoker> _logger;
     private readonly AuditOptions _auditOptions;
+    private readonly ResultCompressionOptions _compression;
     private readonly Counter<long> _calls;
     private readonly Histogram<double> _duration;
 
@@ -43,7 +44,8 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         IRedactionService redaction,
         TimeProvider? timeProvider = null,
         ILogger<ToolInvoker>? logger = null,
-        AuditOptions? auditOptions = null)
+        AuditOptions? auditOptions = null,
+        ResultCompressionOptions? compression = null)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(rateLimiter);
@@ -60,6 +62,7 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         _time = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<ToolInvoker>.Instance;
         _auditOptions = auditOptions ?? new AuditOptions();
+        _compression = compression ?? new ResultCompressionOptions();
         _calls = Meter.CreateCounter<long>("mcpmcp.tool_calls", description: "Tool-Calls durch den Gateway");
         _duration = Meter.CreateHistogram<double>("mcpmcp.tool_call_duration", unit: "ms");
     }
@@ -154,7 +157,17 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         {
             var content = await connection.CallToolAsync(upstreamToolName, request.Arguments, effectiveCt)
                 .ConfigureAwait(false);
-            return new ToolInvocationResult(InvocationStatus.Success, content, null, Elapsed(started));
+
+            // FR-16: Kürzen erst hier, nach dem Upstream-Call — das Audit soll die tatsächlich
+            // gelieferte Größe festhalten, nicht die gekürzte.
+            var (compressed, truncation) = ResultCompressor.Compress(content, _compression);
+            if (truncation is not null)
+            {
+                Log.ResultTruncated(_logger, request.Tool.Value, truncation.OriginalChars, truncation.TruncatedChars);
+            }
+
+            return new ToolInvocationResult(
+                InvocationStatus.Success, compressed, null, Elapsed(started), truncation);
         }
         catch (TimeoutException ex)
         {
@@ -257,5 +270,9 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         [LoggerMessage(Level = LogLevel.Error,
             Message = "Unerwarteter Fehler in der Invoker-Pipeline für {Tool}.")]
         public static partial void UnexpectedPipelineError(ILogger logger, Exception ex, string tool);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Ergebnis von {Tool} gekürzt: {OriginalChars} → {TruncatedChars} Zeichen (FR-16).")]
+        public static partial void ResultTruncated(ILogger logger, string tool, int originalChars, int truncatedChars);
     }
 }

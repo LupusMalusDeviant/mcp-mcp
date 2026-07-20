@@ -34,7 +34,32 @@ public sealed record ToolInvocationResult(
     InvocationStatus Status,
     JsonElement? Content,
     string? ErrorMessage,
-    TimeSpan Duration);
+    TimeSpan Duration,
+    /// <summary>
+    /// Gesetzt, wenn das Ergebnis gekürzt wurde (FR-16). Truncation ist verlustbehaftet — ohne
+    /// Kennzeichen hielte ein Agent das Bruchstück für die vollständige Antwort.
+    /// </summary>
+    ResultTruncation? Truncation = null);
+
+/// <summary>
+/// Nachweis einer Ergebnis-Kürzung (FR-16): Original- und Endgröße in Zeichen.
+/// </summary>
+public sealed record ResultTruncation(int OriginalChars, int TruncatedChars)
+{
+    /// <summary>Feldname, unter dem der Hinweis im gekürzten Ergebnis mitgeliefert wird.</summary>
+    public const string MarkerProperty = "_mcpmcp_truncated";
+}
+
+/// <summary>
+/// Grenzwerte der Ergebnis-Kompression (FR-16). <see cref="MaxResultChars"/> = 0 schaltet ab.
+/// Bewusst in Zeichen statt Token: die Token-Schätzung des Katalogs rechnet ebenfalls in Zeichen,
+/// und eine echte Tokenisierung im Hot Path wäre teurer als der Nutzen.
+/// </summary>
+public sealed record ResultCompressionOptions(int MaxResultChars = 0)
+{
+    /// <summary>Unterhalb dieser Grenze lohnt Kürzen nicht — der Hinweistext wäre größer als die Ersparnis.</summary>
+    public const int MinimumUsefulLimit = 200;
+}
 
 /// <summary>
 /// Der EINZIGE Weg zu einem Tool-Call (DO Nr. 1): AuthN ist vorgelagert, die Pipeline übernimmt
