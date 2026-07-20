@@ -46,7 +46,53 @@ public sealed class UpstreamConnectionTester : IUpstreamConnectionTester
         }
         catch (Exception ex)
         {
-            return new UpstreamTestResult(false, 0, ex.Message);
+            return new UpstreamTestResult(false, 0, ScrubSecrets(ex.Message, config));
+        }
+    }
+
+    /// <summary>
+    /// Entfernt die Secrets der getesteten Konfiguration aus einer Fehlermeldung, bevor sie in der
+    /// UI landet (NFR-04). Fremde Fehlertexte sind unkontrolliert — ein HTTP-Client, der die
+    /// angefragte URL mitliefert, oder ein Upstream, der seinen Header zitiert, würde die
+    /// Zugangsdaten sonst direkt anzeigen.
+    ///
+    /// Bewusst exakter Wertabgleich statt Mustererkennung: Die konkreten Geheimnisse sind hier
+    /// bekannt, raten muss also niemand.
+    /// </summary>
+    public static string ScrubSecrets(string message, UpstreamServerConfig config)
+    {
+        if (string.IsNullOrEmpty(message))
+        {
+            return message;
+        }
+
+        foreach (var secret in Secrets(config))
+        {
+            // Sehr kurze Werte würden halbe Fehlermeldungen zerschießen und sind ohnehin keine Secrets.
+            if (secret.Length >= 4)
+            {
+                message = message.Replace(secret, "***", StringComparison.Ordinal);
+            }
+        }
+
+        return message;
+    }
+
+    private static IEnumerable<string> Secrets(UpstreamServerConfig config)
+    {
+        foreach (var value in config.Stdio?.EnvironmentVariables?.Values ?? [])
+        {
+            yield return value;
+        }
+
+        foreach (var value in config.Http?.Headers?.Values ?? [])
+        {
+            yield return value;
+        }
+
+        if (config.OpenApi?.Credential is { } credential)
+        {
+            yield return credential;
         }
     }
 }

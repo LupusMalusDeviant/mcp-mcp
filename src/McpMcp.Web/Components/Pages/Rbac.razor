@@ -5,6 +5,7 @@
 @inject IAuditSink Audit
 @inject TimeProvider Time
 @inject AuthenticationStateProvider AuthState
+@inject IUpstreamSupervisor Supervisor
 
 <h1>RBAC-Verwaltung</h1>
 <p class="muted">Agenten-Identitäten, Rollen mit Grants und API-Keys (FR-27/28/36).</p>
@@ -35,8 +36,36 @@
     <label><input type="checkbox" @bind="_roleGlobal" style="width:auto" /> Global-Grant (alle Tools/Aktionen — Admin-Agent)</label>
     @if (!_roleGlobal)
     {
-        <label>Tool-Grants (ein Namespaced-Name pro Zeile, gewährt UseTool)</label>
-        <textarea class="mono" rows="3" @bind="_roleTools" placeholder="github__list_issues"></textarea>
+        <div class="row">
+            <div>
+                <label>Wirkungsebene</label>
+                <select @bind="_roleScope">
+                    <option value="tool">einzelne Tools</option>
+                    <option value="server">ganzer Server (vererbt auf alle seine Tools)</option>
+                </select>
+            </div>
+            @if (_roleScope == "server")
+            {
+                <div>
+                    <label>Server</label>
+                    <select @bind="_roleServer">
+                        <option value="">(wählen)</option>
+                        @foreach (var s in _servers) { <option value="@s.Id.Value">@s.Slug</option> }
+                    </select>
+                </div>
+            }
+        </div>
+        @if (_roleScope == "tool")
+        {
+            <label>Tool-Grants (ein Namespaced-Name pro Zeile)</label>
+            <textarea class="mono" rows="3" @bind="_roleTools" placeholder="github__list_issues"></textarea>
+        }
+        <label>Erlaubte Aktionen</label>
+        <div class="pill-list">
+            <label class="pill"><input type="checkbox" @bind="_actUseTool" style="width:auto" /> Tool aufrufen</label>
+            <label class="pill"><input type="checkbox" @bind="_actReadResource" style="width:auto" /> Resource lesen</label>
+            <label class="pill"><input type="checkbox" @bind="_actUsePrompt" style="width:auto" /> Prompt nutzen</label>
+        </div>
     }
     <div class="toolbar" style="margin-top:.75rem">
         <button @onclick="AddRole">Rolle anlegen</button>
@@ -135,6 +164,9 @@
     private IReadOnlyList<ApiKeyInfo> _keys = [];
 
     private string _roleName = "", _roleTools = ""; private int? _roleRate; private bool _roleGlobal, _roleOk; private string? _roleMsg;
+    private string _roleScope = "tool", _roleServer = "";
+    private bool _actUseTool = true, _actReadResource, _actUsePrompt;
+    private IReadOnlyList<UpstreamStatus> _servers = [];
     private string _idName = ""; private string _idProfile = ""; private readonly HashSet<RoleId> _idRoles = []; private bool _idOk; private string? _idMsg;
     private IdentityId? _keyIdentity; private string _keyLabel = ""; private string? _newKey;
     private DateTime? _keyExpiresAt;
@@ -146,6 +178,7 @@
         _roles = await RbacMgmt.ListRolesAsync(CancellationToken.None);
         _identities = await RbacMgmt.ListIdentitiesAsync(CancellationToken.None);
         _profiles = await RbacMgmt.ListProfilesAsync(CancellationToken.None);
+        _servers = Supervisor.Statuses;
     }
 
     private async Task<string> UserAsync()
@@ -166,10 +199,40 @@
     {
         _roleMsg = null;
         if (string.IsNullOrWhiteSpace(_roleName)) { _roleOk = false; _roleMsg = "Name fehlt."; return; }
-        var grants = _roleGlobal
-            ? new List<Grant> { new(new PermissionScope(null, null), [ToolAction.UseTool, ToolAction.ReadResource, ToolAction.UsePrompt]) }
-            : _roleTools.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(t => new Grant(new PermissionScope(null, new NamespacedToolName(t)), [ToolAction.UseTool])).ToList();
+        // FR-28 kennt drei Wirkungsebenen und drei Aktionen — vorher konnte die UI nur "global"
+        // oder "Tool + UseTool"; alles andere ging nur per REST und verletzte damit Z-6.
+        List<ToolAction> actions = [];
+        if (_actUseTool) { actions.Add(ToolAction.UseTool); }
+        if (_actReadResource) { actions.Add(ToolAction.ReadResource); }
+        if (_actUsePrompt) { actions.Add(ToolAction.UsePrompt); }
+
+        List<Grant> grants;
+        if (_roleGlobal)
+        {
+            grants = [new Grant(new PermissionScope(null, null), [ToolAction.UseTool, ToolAction.ReadResource, ToolAction.UsePrompt])];
+        }
+        else if (actions.Count == 0)
+        {
+            _roleOk = false; _roleMsg = "Mindestens eine Aktion wählen — eine Rolle ohne Aktion gewährt nichts."; return;
+        }
+        else if (_roleScope == "server")
+        {
+            if (!Guid.TryParse(_roleServer, out var serverId))
+            {
+                _roleOk = false; _roleMsg = "Server wählen."; return;
+            }
+
+            grants = [new Grant(new PermissionScope(new ServerId(serverId), null), actions)];
+        }
+        else
+        {
+            grants = [.. _roleTools.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => new Grant(new PermissionScope(null, new NamespacedToolName(t)), actions))];
+            if (grants.Count == 0)
+            {
+                _roleOk = false; _roleMsg = "Mindestens ein Tool angeben."; return;
+            }
+        }
         try
         {
             await RbacMgmt.UpsertRoleAsync(
@@ -177,7 +240,8 @@
                 CancellationToken.None);
             UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.RbacChanged, $"role-added:{_roleName}");
             _roleOk = true; _roleMsg = "Rolle angelegt.";
-            _roleName = _roleTools = ""; _roleRate = null; _roleGlobal = false;
+            _roleName = _roleTools = _roleServer = ""; _roleRate = null; _roleGlobal = false;
+            _roleScope = "tool"; _actUseTool = true; _actReadResource = _actUsePrompt = false;
             await Reload();
         }
         catch (Exception ex) { _roleOk = false; _roleMsg = ex.Message; }
