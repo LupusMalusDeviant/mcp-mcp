@@ -1,0 +1,116 @@
+@page "/approvals"
+@attribute [Authorize(Policy = UiPolicies.Operator)]
+@inject IApprovalStore ApprovalQueue
+@inject IApprovalPolicy Policy
+@inject IToolCatalog Catalog
+@inject IAuditSink Audit
+@inject TimeProvider Time
+@inject AuthenticationStateProvider AuthState
+
+<h1>Freigaben</h1>
+<p class="muted">
+    Tools, die eine menschliche Freigabe pro Aufruf erfordern (FR-32). Ein wartender Aufruf wird
+    sofort abgewiesen; der Agent setzt ihn nach der Freigabe erneut ab.
+</p>
+
+<div class="card">
+    <h3 style="margin-top:0">Wartende Anfragen</h3>
+    @if (_pending.Count == 0)
+    {
+        <p class="muted">Nichts offen.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Angefordert (UTC)</th><th>Aufrufer</th><th>Tool</th><th>Argumente (maskiert)</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var r in _pending)
+                    {
+                        <tr>
+                            <td class="mono">@r.RequestedAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)</td>
+                            <td>@r.CallerDescription</td>
+                            <td class="mono">@r.Tool.Value</td>
+                            <td><pre class="mono" style="max-width:340px;white-space:pre-wrap">@(r.RedactedArguments?.GetRawText() ?? "—")</pre></td>
+                            <td style="white-space:nowrap">
+                                <button class="btn-sm" @onclick="() => Decide(r.Id, true)">Freigeben</button>
+                                <button class="btn-sm btn-danger" @onclick="() => Decide(r.Id, false)">Ablehnen</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <p class="muted" style="margin-bottom:0">
+            Eine Freigabe gilt <strong>einmalig</strong> für genau diesen Aufruf (Identität, Tool,
+            Argumente) und verfällt nach einer Stunde. Eine Wiederholung erfordert erneute Freigabe.
+        </p>
+    }
+    @if (_message is not null)
+    {
+        <p class="msg-ok">@_message</p>
+    }
+</div>
+
+<AuthorizeView Policy="@UiPolicies.Admin">
+    <div class="card">
+        <h3 style="margin-top:0">Freigabepflichtige Tools</h3>
+        <p class="muted">Welche Tools eine Freigabe verlangen — zur Laufzeit, ohne Neustart.</p>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Tool</th><th>Freigabepflichtig</th></tr></thead>
+                <tbody>
+                    @foreach (var tool in _allTools)
+                    {
+                        <tr>
+                            <td class="mono">@tool.Value</td>
+                            <td>
+                                <input type="checkbox" checked="@_required.Contains(tool)" style="width:auto"
+                                       @onchange="e => SetRequired(tool, (bool)e.Value!)" />
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</AuthorizeView>
+
+@code {
+    private IReadOnlyList<ApprovalRequest> _pending = [];
+    private IReadOnlyList<NamespacedToolName> _allTools = [];
+    private HashSet<NamespacedToolName> _required = [];
+    private string? _message;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _pending = await ApprovalQueue.ListAsync(ApprovalState.Pending, CancellationToken.None);
+        _allTools = Catalog.Snapshot.Where(e => e.Kind == CatalogEntryKind.Tool)
+            .Select(e => e.Name).OrderBy(n => n.Value, StringComparer.Ordinal).ToList();
+        _required = [.. Policy.All];
+    }
+
+    private async Task<string> UserAsync()
+        => (await AuthState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "?";
+
+    private async Task Decide(Guid id, bool approved)
+    {
+        await ApprovalQueue.DecideAsync(id, approved, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.ConfigChanged,
+            $"approval-{(approved ? "granted" : "denied")}:{id}");
+        _message = approved
+            ? "Freigegeben. Der Agent kann den Aufruf jetzt erneut absetzen."
+            : "Abgelehnt.";
+        await Reload();
+    }
+
+    private async Task SetRequired(NamespacedToolName tool, bool required)
+    {
+        await Policy.SetAsync(tool, required, CancellationToken.None);
+        UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.ConfigChanged,
+            $"approval-tool-{(required ? "required" : "cleared")}:{tool.Value}");
+        await Reload();
+    }
+}

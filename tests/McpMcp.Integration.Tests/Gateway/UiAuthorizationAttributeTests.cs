@@ -27,6 +27,7 @@ public class UiAuthorizationAttributeTests
         { "/users", UiPolicies.Admin },
         { "/assets", UiPolicies.Admin },
         { "/guardrails", UiPolicies.Admin },
+        { "/approvals", UiPolicies.Operator },
         { "/logs", UiPolicies.Authenticated },
         { "/", UiPolicies.Authenticated },
     };

@@ -30,6 +30,13 @@ public enum InvocationStatus
     /// persistiert in der DB.
     /// </summary>
     GuardBlocked = 6,
+
+    /// <summary>
+    /// Das Tool erfordert menschliche Freigabe (FR-32, ADR-0012). Der Call wurde nicht ausgeführt;
+    /// eine Anfrage liegt in der Queue. Unterschieden von <see cref="Denied"/>: „darf nach
+    /// Freigabe" statt „darf nie". Wert am Ende — persistiert.
+    /// </summary>
+    ApprovalRequired = 7,
 }
 
 public sealed record ToolInvocationRequest(

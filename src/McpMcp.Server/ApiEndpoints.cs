@@ -280,7 +280,38 @@ internal static class ApiEndpoints
                 ct);
             return Results.Ok(result);
         }).AddEndpointFilter(RequireAdminAsync);
+
+        // ── Management: Freigabe-Queue (FR-32) ───────────────────────────────
+        var approvals = api.MapGroup("/approvals").AddEndpointFilter(RequireAdminAsync);
+
+        approvals.MapGet("/", async (ApprovalState? state, IApprovalStore store, CancellationToken ct) =>
+            Results.Ok(await store.ListAsync(state, ct)));
+
+        approvals.MapPost("/{id:guid}/decide", async (
+            Guid id, bool approved, HttpContext ctx, IApprovalStore store, IAuditSink audit,
+            TimeProvider time, CancellationToken ct) =>
+        {
+            await store.DecideAsync(id, approved, ct);
+            AuditManagement(audit, time, ctx, AuditEventKind.ConfigChanged, null,
+                $"approval-{(approved ? "granted" : "denied")}:{id}");
+            return Results.NoContent();
+        });
+
+        approvals.MapGet("/tools", (IApprovalPolicy policy) =>
+            Results.Ok(policy.All.Select(t => t.Value)));
+
+        approvals.MapPost("/tools", async (
+            ApprovalToolToggle body, HttpContext ctx, IApprovalPolicy policy, IAuditSink audit,
+            TimeProvider time, CancellationToken ct) =>
+        {
+            await policy.SetAsync(new NamespacedToolName(body.Tool), body.Required, ct);
+            AuditManagement(audit, time, ctx, AuditEventKind.ConfigChanged, null,
+                $"approval-tool-{(body.Required ? "required" : "cleared")}:{body.Tool}");
+            return Results.NoContent();
+        });
     }
+
+    private sealed record ApprovalToolToggle(string Tool, bool Required);
 
     private static IdentityId Identity(HttpContext ctx) => (IdentityId)ctx.Items[ApiKeyAuthMiddleware.IdentityItemKey]!;
 

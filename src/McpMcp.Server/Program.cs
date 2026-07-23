@@ -166,6 +166,12 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<IContentGuard>(sp => sp.GetRequiredService<SecretGuard>());
 
+// ── Freigabe-Flows (FR-32, ADR-0012) ─────────────────────────────────────────
+builder.Services.AddSingleton<ApprovalPolicyStore>();
+builder.Services.AddSingleton<IApprovalPolicy>(sp => sp.GetRequiredService<ApprovalPolicyStore>());
+builder.Services.AddSingleton<IApprovalStore>(sp => new ApprovalStore(
+    sp.GetRequiredService<IDbContextFactory<McpMcpDbContext>>(), sp.GetRequiredService<TimeProvider>()));
+
 builder.Services.AddSingleton<RedactionRuleStore>();
 builder.Services.AddSingleton<IRedactionRules>(sp => sp.GetRequiredService<RedactionRuleStore>());
 builder.Services.AddSingleton<RedactionService>(sp => new RedactionService(sp.GetRequiredService<IRedactionRules>()));

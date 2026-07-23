@@ -97,6 +97,25 @@ Neue eigene Regeln starten immer im Modus **Beobachten**. Erst nach Sichtung der
 *Blockieren* stellen — eine Regel scharfzuschalten, die man nie hat feuern sehen, bricht im
 Zweifel produktive Arbeit ab.
 
+## Freigabe-Flows (Approval)
+
+Einzelne Tools lassen sich freigabepflichtig machen (FR-32,
+[ADR-0012](adr/0012-approval-flows-asynchron.md)): Ein solcher Aufruf wird **nicht** ausgeführt,
+sondern **sofort abgewiesen** (`ApprovalRequired`), und eine Anfrage landet in der Queue unter
+**Freigaben** in der Web-UI. Ein Mensch (Operator/Admin) sieht dort die konkreten — maskierten —
+Argumente und entscheidet.
+
+Nach der Freigabe setzt der Agent **denselben** Aufruf erneut ab; er läuft dann **einmalig** durch.
+Die Freigabe bindet an `(Identität, Tool, Argument-Fingerprint)` und verfällt nach einer Stunde:
+
+- Kein hängender Agent — der Timeout aus FR-09 bleibt unberührt, es wird nichts blockierend gewartet.
+- Eine Freigabe für `delete_file{path:/tmp/x}` deckt **nicht** `delete_file{path:/etc/passwd}` ab.
+- Einmalig: Eine Wiederholung erfordert erneute Freigabe. So wird eine erteilte Zustimmung nicht
+  zum Dauerfreifahrtschein.
+
+Welche Tools freigabepflichtig sind, ist unter **Freigaben** (Admin-Bereich) zur Laufzeit
+schaltbar, ohne Neustart.
+
 ## Ergebnis-Kompression
 
 Ein einzelnes umfangreiches Tool-Ergebnis kann die Token-Ersparnis der Profile wieder auffressen.

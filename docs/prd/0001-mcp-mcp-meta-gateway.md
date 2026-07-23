@@ -106,7 +106,7 @@ Priorität: **M** = Must (v1), **S** = Should (v1 wenn möglich), **C** = Could 
 - **FR-29 (M):** Default-Deny: Was nicht explizit erlaubt ist, ist unsichtbar und nicht aufrufbar. Sichtbarkeit folgt Berechtigung (ein Agent sieht in `tools/list`/`search_tools` nur, was er nutzen darf).
 - **FR-30 (M):** Admin-Rollen für die Web-UI getrennt vom Agenten-RBAC (mindestens: Admin = alles; Operator = Server verwalten, keine Key-/Rollenverwaltung; Auditor = nur Logs lesen).
 - **FR-31 (S):** Zeitliche/quantitative Schranken pro Rolle: Rate-Limits (Calls/min) und optionale Gültigkeitsfenster für Keys.
-- **FR-32 (C):** Approval-Flows: bestimmte Tools erfordern menschliche Freigabe pro Call (Queue in der Web-UI). — *Zurückgestellt (v2), inhaltlich der wertvollste offene Punkt. Das Problem ist nicht die Queue, sondern der **blockierende Call**: Ein Agent hinge minutenlang in `tools/call`, während der Call-Timeout (FR-09) genau das verhindern soll. Braucht ein Design (Ablehnen mit Wiederholungshinweis? Polling?) und eine eigene ADR vor der Umsetzung.*
+- **FR-32 (C):** Approval-Flows: bestimmte Tools erfordern menschliche Freigabe pro Call (Queue in der Web-UI). — *Umgesetzt ([ADR-0012](../adr/0012-approval-flows-asynchron.md)). Das gelöste Kernproblem war der blockierende Call vs. der Timeout aus FR-09: **asynchron** — der Aufruf wird sofort mit `ApprovalRequired` abgewiesen, eine Anfrage landet in der UI-Queue, nach Freigabe läuft **derselbe** Aufruf (gebunden an Identität + Tool + Argument-Fingerprint) **einmalig** durch. Kein hängender Agent, keine blockierte Reservierung. Freigabepflicht pro Tool zur Laufzeit schaltbar.*
 
 ### FR-Gruppe G — Web-UI
 

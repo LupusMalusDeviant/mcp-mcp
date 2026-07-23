@@ -1,0 +1,65 @@
+# ADR-0012: Approval-Flows asynchron statt blockierend
+
+- **Status:** Akzeptiert
+- **Datum:** 2026-07-20
+- **Betrifft:** FR-32, FR-09 (Call-Timeout), ADR-0008 (Invocation-Kern)
+
+## Kontext
+
+FR-32 verlangt, dass bestimmte Tools **pro Call eine menschliche Freigabe** erfordern, mit einer
+Queue in der Web-UI. Der offensichtliche Weg — den `tools/call` blockieren, bis ein Mensch
+freigibt — kollidiert direkt mit FR-09: Jeder Call hat einen Timeout (Standard 60 s), und ein
+Gateway, das Calls minutenlang offen hält, widerspricht seinem eigenen Fault-Isolation-Versprechen.
+Ein blockierender Call bindet außerdem eine In-Flight-Reservierung und einen Agenten, der headless
+wartet.
+
+## Entscheidung
+
+**Asynchrones Modell: sofort ablehnen, Freigabe läuft nebenher.**
+
+1. Trifft ein Call auf ein freigabepflichtiges Tool und liegt **keine** gültige Freigabe vor, wird
+   er **nicht** ausgeführt. Der Invoker legt eine **Approval-Anfrage** in eine persistente Queue
+   und kehrt sofort mit dem neuen Status **`ApprovalRequired`** zurück — mit einer Meldung, die
+   sagt: „Freigabe angefordert, später erneut versuchen."
+2. Ein Mensch entscheidet in der UI-Queue über **Freigeben** oder **Ablehnen**. Er sieht dabei die
+   **konkreten Argumente** des Calls.
+3. Beim **erneuten** Aufruf desselben Tools mit denselben Argumenten durch dieselbe Identität greift
+   die Freigabe: Der Call läuft **einmalig** durch. Danach ist die Freigabe verbraucht.
+
+Die Bindung ist `(Identität, Tool, Argument-Fingerprint)`. Der Fingerprint ist ein Hash der
+**redigierten** Argumente — dieselbe Redaction wie im Audit, damit die Queue keine Secrets im
+Klartext hält.
+
+## Begründung
+
+- **Kein hängender Agent, kein blockierter Slot.** Das Verhalten fügt sich in das bestehende
+  Request/Response-Modell ein, statt ihm zu widersprechen.
+- **Der Mensch gibt genau diesen Call frei, nicht „das Tool für 5 Minuten".** Der Argument-Fingerprint
+  macht die Freigabe präzise: Wer `delete_file{path:/tmp/x}` freigibt, gibt nicht
+  `delete_file{path:/etc/passwd}` frei.
+- **Einmalige Freigabe** verhindert, dass eine einmal erteilte Zustimmung zum Dauerfreifahrtschein
+  wird. Wiederholung erfordert erneute Freigabe — das ist bei freigabepflichtigen (also heiklen)
+  Tools die sichere Vorgabe.
+
+## Konsequenzen
+
+- Der Agent muss den Retry selbst fahren. Das ist zumutbar: Der `ApprovalRequired`-Status und die
+  Meldung sagen ausdrücklich, dass und warum. Kein Meta-Tool und kein Polling-Protokoll nötig.
+- Eine Freigabe hat ein **Verfallsfenster** (Vorschlag: 1 h). Eine Zustimmung, die niemand einlöst,
+  soll nicht ewig scharf bleiben.
+- Neuer Status `InvocationStatus.ApprovalRequired` (Wert am Ende — persistierte Zahlen). Er ist von
+  `Denied` unterscheidbar: `Denied` heißt „darf nie", `ApprovalRequired` heißt „darf nach Freigabe".
+- Die Queue ist persistent — ein Gateway-Neustart darf offene Anfragen nicht verlieren. Sie
+  speichert den Argument-**Fingerprint** und die redigierten Argumente zur Anzeige, nie die rohen.
+- Ab wann ein Tool freigabepflichtig ist, wird pro Tool konfiguriert (wie Description-Overrides und
+  Guard-Regeln), zur Laufzeit über die UI, ohne Neustart.
+
+## Verworfen
+
+- **Blockierend warten** (Call bleibt offen bis Freigabe/Timeout): widerspricht FR-09, bindet Slot
+  und Agent, und ein Approval-Timeout von Minuten ist genau die Latenz, die das Gateway sonst
+  vermeidet.
+- **Freigabe pro `(Identität, Tool)` ohne Argumentbindung:** zu grob — gäbe eine ganze Tool-Klasse
+  frei statt des konkreten, geprüften Calls.
+- **Meta-Tool `check_approval`:** eigener Protokoll-Umweg, der den Agenten zu einem Polling-Client
+  macht; der schlichte Retry desselben Calls ist einfacher und braucht keine neue Tool-Oberfläche.

@@ -37,6 +37,10 @@ public sealed class McpMcpDbContext : DbContext
 
     public DbSet<GuardRuleRow> GuardRules => Set<GuardRuleRow>();
 
+    public DbSet<ApprovalRequestRow> ApprovalRequests => Set<ApprovalRequestRow>();
+
+    public DbSet<ApprovalToolRow> ApprovalTools => Set<ApprovalToolRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ConfigVersionRow>(e =>
@@ -121,6 +125,22 @@ public sealed class McpMcpDbContext : DbContext
             e.Property(r => r.Description).IsRequired().HasMaxLength(300);
             e.Property(r => r.Pattern).IsRequired().HasMaxLength(1000);
             e.Property(r => r.Keyword).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<ApprovalRequestRow>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Tool).IsRequired().HasMaxLength(300);
+            e.Property(r => r.Fingerprint).IsRequired().HasMaxLength(64);
+            e.Property(r => r.CallerDescription).HasMaxLength(500);
+            // Der Consume-Pfad sucht nach genau dieser Kombination — auf dem Hot Path.
+            e.HasIndex(r => new { r.CallerId, r.Tool, r.Fingerprint, r.State });
+        });
+
+        modelBuilder.Entity<ApprovalToolRow>(e =>
+        {
+            e.HasKey(r => r.Tool);
+            e.Property(r => r.Tool).HasMaxLength(300);
         });
 
         // Provider-neutral: Zeitstempel als UTC-Ticks (bigint). SQLite kann DateTimeOffset weder
@@ -306,6 +326,35 @@ public sealed class GuardRuleRow
     public bool Enabled { get; set; } = true;
 
     public bool IsCustom { get; set; }
+}
+
+/// <summary>Eine Freigabe-Anfrage in der Queue (FR-32, ADR-0012).</summary>
+public sealed class ApprovalRequestRow
+{
+    public Guid Id { get; set; }
+
+    public Guid CallerId { get; set; }
+
+    public string CallerDescription { get; set; } = string.Empty;
+
+    public string Tool { get; set; } = string.Empty;
+
+    public string Fingerprint { get; set; } = string.Empty;
+
+    /// <summary>Redigierte Argumente als JSON — nie die rohen.</summary>
+    public string? RedactedArgumentsJson { get; set; }
+
+    public int State { get; set; }
+
+    public long RequestedAtTicks { get; set; }
+
+    public long ExpiresAtTicks { get; set; }
+}
+
+/// <summary>Markiert ein Tool als freigabepflichtig (FR-32).</summary>
+public sealed class ApprovalToolRow
+{
+    public string Tool { get; set; } = string.Empty;
 }
 
 /// <summary>Versioniertes Text-Asset (Skill/Prompt/Instruction, FR-40, WP6.4). Append-only pro Version.</summary>

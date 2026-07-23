@@ -22,6 +22,7 @@ public sealed partial class GatewayStartupService : IHostedService
     private readonly ToolDescriptionOverrideStore _descriptionOverrides;
     private readonly RedactionRuleStore _redactionRules;
     private readonly GuardRuleStore _guardRules;
+    private readonly ApprovalPolicyStore _approvalPolicy;
     private readonly IApiKeyService _apiKeys;
     private readonly IUiUserService _uiUsers;
     private readonly McpMcp.Web.UiInternalIdentity _uiInternal;
@@ -36,6 +37,7 @@ public sealed partial class GatewayStartupService : IHostedService
         ToolDescriptionOverrideStore descriptionOverrides,
         RedactionRuleStore redactionRules,
         GuardRuleStore guardRules,
+        ApprovalPolicyStore approvalPolicy,
         IApiKeyService apiKeys,
         IUiUserService uiUsers,
         McpMcp.Web.UiInternalIdentity uiInternal,
@@ -49,6 +51,7 @@ public sealed partial class GatewayStartupService : IHostedService
         _descriptionOverrides = descriptionOverrides;
         _redactionRules = redactionRules;
         _guardRules = guardRules;
+        _approvalPolicy = approvalPolicy;
         _apiKeys = apiKeys;
         _uiUsers = uiUsers;
         _uiInternal = uiInternal;
@@ -68,6 +71,7 @@ public sealed partial class GatewayStartupService : IHostedService
         // Beim allerersten Start den kuratierten Regelsatz einsaeen; danach ist die DB massgeblich,
         // damit ein abgeschaltetes Muster abgeschaltet bleibt (ADR-0011).
         await _guardRules.LoadAsync(BuiltInGuardRules.All, cancellationToken);
+        await _approvalPolicy.LoadAsync(cancellationToken);
         await BootstrapAdminIfEmptyAsync(cancellationToken);
         await EnsureUiInternalIdentityAsync(cancellationToken);
         await BootstrapUiAdminIfEmptyAsync(cancellationToken);

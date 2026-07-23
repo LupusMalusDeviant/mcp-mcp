@@ -103,6 +103,12 @@ internal sealed class InvokerTestWorld
         => new(Authorization, RateLimiter, Catalog, Supervisor, Audit, Redaction, Time,
             logger: null, auditOptions: null, compression: null, guard: guard, guardOptions: options);
 
+    /// <summary>Invoker mit aktiver Freigabe-Prüfung (ADR-0012).</summary>
+    public ToolInvoker WithApproval(IApprovalPolicy policy, IApprovalStore store)
+        => new(Authorization, RateLimiter, Catalog, Supervisor, Audit, Redaction, Time,
+            logger: null, auditOptions: null, compression: null, guard: null, guardOptions: null,
+            approvalPolicy: policy, approvalStore: store);
+
     public IdentityId RegisterAgent(params Grant[] grants)
     {
         var role = new Role(RoleId.New(), "rolle", grants);

@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Json.Schema;
 using McpMcp.Abstractions;
+using McpMcp.Core.Approvals;
 using McpMcp.Core.Guardrails;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -35,6 +36,9 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     private readonly ResultCompressionOptions _compression;
     private readonly IContentGuard? _guard;
     private readonly GuardOptions _guardOptions;
+    private readonly IApprovalPolicy? _approvalPolicy;
+    private readonly IApprovalStore? _approvalStore;
+    private readonly TimeSpan _approvalTtl = TimeSpan.FromHours(1);
     private readonly Counter<long> _calls;
     private readonly Histogram<double> _duration;
 
@@ -50,7 +54,9 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         AuditOptions? auditOptions = null,
         ResultCompressionOptions? compression = null,
         IContentGuard? guard = null,
-        GuardOptions? guardOptions = null)
+        GuardOptions? guardOptions = null,
+        IApprovalPolicy? approvalPolicy = null,
+        IApprovalStore? approvalStore = null)
     {
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(rateLimiter);
@@ -70,6 +76,8 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         _compression = compression ?? new ResultCompressionOptions();
         _guard = guard;
         _guardOptions = guardOptions ?? new GuardOptions();
+        _approvalPolicy = approvalPolicy;
+        _approvalStore = approvalStore;
         _calls = Meter.CreateCounter<long>("mcpmcp.tool_calls", description: "Tool-Calls durch den Gateway");
         _duration = Meter.CreateHistogram<double>("mcpmcp.tool_call_duration", unit: "ms");
     }
@@ -157,6 +165,12 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         if (Guard(request.Arguments, GuardDirection.Outbound) is { } outboundBlock)
         {
             return Fail(InvocationStatus.Denied, outboundBlock, started);
+        }
+
+        // Freigabe-Pflicht (FR-32, ADR-0012): ebenfalls vor dem Upstream, kein Seiteneffekt.
+        if (await CheckApprovalAsync(request, ct).ConfigureAwait(false) is { } approvalMessage)
+        {
+            return Fail(InvocationStatus.ApprovalRequired, approvalMessage, started);
         }
 
         using var overrideCts = request.TimeoutOverride is { } t
@@ -255,6 +269,48 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     }
 
     /// <summary>
+    /// Prüft die Freigabe-Pflicht (FR-32, ADR-0012). Liefert eine Meldung, wenn der Call auf eine
+    /// Freigabe warten muss — sonst null (frei oder nicht freigabepflichtig).
+    /// </summary>
+    private async Task<string?> CheckApprovalAsync(ToolInvocationRequest request, CancellationToken ct)
+    {
+        if (_approvalPolicy is null || _approvalStore is null || !_approvalPolicy.RequiresApproval(request.Tool))
+        {
+            return null;
+        }
+
+        // Fingerprint über die REDIGIERTEN Argumente — die Queue soll keine Secrets im Klartext
+        // halten, und die Freigabe bindet trotzdem an genau diesen Aufruf.
+        var redacted = _redaction.RedactArguments(request.Tool, request.Arguments);
+        var fingerprint = ApprovalFingerprint.Compute(request.Caller, request.Tool, redacted);
+
+        if (await _approvalStore.TryConsumeApprovalAsync(request.Caller, request.Tool, fingerprint, ct)
+            .ConfigureAwait(false))
+        {
+            return null; // freigegeben — der Call läuft einmalig durch
+        }
+
+        var now = _time.GetUtcNow();
+        var requestId = await _approvalStore.EnqueueAsync(
+            new ApprovalRequest(
+                Id: Guid.Empty, // vom Store vergeben
+                request.Caller,
+                _authorization.DescribeCaller(request.Caller) ?? request.Caller.ToString(),
+                request.Tool,
+                fingerprint,
+                redacted.ValueKind is JsonValueKind.Undefined ? null : redacted,
+                ApprovalState.Pending,
+                RequestedAt: now,
+                ExpiresAt: now + _approvalTtl),
+            ct).ConfigureAwait(false);
+
+        Log.ApprovalRequired(_logger, request.Tool.Value, requestId);
+        return $"Dieses Tool erfordert eine menschliche Freigabe. Anfrage {requestId} wurde in die "
+            + "Warteschlange gelegt; nach Freigabe denselben Aufruf erneut absetzen. NICHT sofort "
+            + "wiederholen — die Freigabe erfolgt asynchron in der Verwaltungsoberfläche.";
+    }
+
+    /// <summary>
     /// Führt die Inhaltsprüfung aus und liefert die Fehlermeldung, wenn blockiert wird — sonst null.
     /// Beobachtete Treffer landen im Log, ohne den Call zu stoppen (Probelauf, ADR-0011).
     /// </summary>
@@ -347,5 +403,9 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         [LoggerMessage(Level = LogLevel.Warning,
             Message = "Guardrail: Nutzlast {Direction} mit {Chars} Zeichen über der Prüfgrenze {Limit} — nicht durchgelassen.")]
         public static partial void GuardPayloadTooLarge(ILogger logger, string direction, int chars, int limit);
+
+        [LoggerMessage(Level = LogLevel.Information,
+            Message = "Freigabe erforderlich für {Tool}; Anfrage {RequestId} in der Warteschlange (FR-32).")]
+        public static partial void ApprovalRequired(ILogger logger, string tool, Guid requestId);
     }
 }

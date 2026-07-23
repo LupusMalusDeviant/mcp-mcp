@@ -57,6 +57,60 @@ namespace McpMcp.Persistence.Migrations.Postgres.Migrations
                     b.ToTable("ApiKeys");
                 });
 
+            modelBuilder.Entity("McpMcp.Persistence.ApprovalRequestRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CallerDescription")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("CallerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("ExpiresAtTicks")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RedactedArgumentsJson")
+                        .HasColumnType("text");
+
+                    b.Property<long>("RequestedAtTicks")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Tool")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CallerId", "Tool", "Fingerprint", "State");
+
+                    b.ToTable("ApprovalRequests");
+                });
+
+            modelBuilder.Entity("McpMcp.Persistence.ApprovalToolRow", b =>
+                {
+                    b.Property<string>("Tool")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("Tool");
+
+                    b.ToTable("ApprovalTools");
+                });
+
             modelBuilder.Entity("McpMcp.Persistence.AssetRow", b =>
                 {
                     b.Property<Guid>("Id")
