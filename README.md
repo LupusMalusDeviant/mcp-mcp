@@ -100,7 +100,7 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M4 "v1.0" | Web UI, hardening, security audit, Docker release | ✅ done |
 | M5 "Gap closure" | 23 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done, unreleased |
 | M6 "Guardrails" | Secret detection in the invoker — blocks credentials in tool arguments and results, runtime-editable rules ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) | ✅ done, unreleased |
-| M7 "Corrected release" | Rewrite the acceptance doc against the actual state, then a release verified against the requirements | ⏳ open |
+| M7 "Corrected release" | [Acceptance rewritten against the actual state](docs/acceptance/v1.2.md); release itself still pending | 🔄 acceptance ✅, release open |
 
 ## License
 
