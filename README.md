@@ -14,7 +14,9 @@
 > See the [threat model](docs/security/threat-model.md) for details. The fix is on `main`;
 > a corrected release follows once the planned scope is complete and independently verified.
 
-> **Current state (unreleased, on `main`).** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. Dockerized (< 300 MB, non-root), 220+ tests green on Windows + Linux (persistence also against real PostgreSQL), [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
+> **Current state (unreleased, on `main`).** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. It also **scans tool arguments and results for credentials** and blocks them before they reach the upstream or the model's context window ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) — rules are editable at runtime, findings never contain the matched value, and the check costs ~0.05 ms per call. Dockerized (< 300 MB, non-root), 280+ tests green on Windows + Linux (persistence also against real PostgreSQL), [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
+>
+> Pattern-based detection catches what has a pattern (`AKIA…`, `ghp_…`, PEM blocks); a random 32-char password is indistinguishable from a file id. The guardrail is an additional layer, not a substitute for keeping secrets out of tool results.
 >
 > A security audit was performed before v1.0, but it missed the redaction defect above — the gap was
 > only found later by an independent requirement-versus-code review. Treat the audit as one input,
@@ -96,8 +98,9 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M2 "Enforcement stands" | Catalog, RBAC, audit, MCP endpoint, hot-swap | ✅ done |
 | M3 "Both bridges carry" | REST facade, OpenAPI import | ✅ done |
 | M4 "v1.0" | Web UI, hardening, security audit, Docker release | ✅ done |
-| M5 "Gap closure" | 13 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done, unreleased |
-| M6 "Corrected release" | FR-02 (SSE legacy transport) decision, then a release that has been verified against the requirements | ⏳ open |
+| M5 "Gap closure" | 23 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done, unreleased |
+| M6 "Guardrails" | Secret detection in the invoker — blocks credentials in tool arguments and results, runtime-editable rules ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) | ✅ done, unreleased |
+| M7 "Corrected release" | Rewrite the acceptance doc against the actual state, then a release verified against the requirements | ⏳ open |
 
 ## License
 
