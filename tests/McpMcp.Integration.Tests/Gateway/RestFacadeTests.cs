@@ -23,6 +23,22 @@ public sealed class RestFacadeTests : IClassFixture<GatewayFixture>
     }
 
     [Fact]
+    public async Task Audit_endpoint_works_without_paging_parameters()
+    {
+        // Im Live-Test fiel auf: GET /audit ohne page/pageSize schlug mit 400 fehl, weil die
+        // beiden int-Parameter Pflicht waren. Der Default muss ohne Angabe greifen.
+        var (_, apiKey) = await _gw.SeedAdminAsync("audit-admin");
+        using var client = CreateApiClient(apiKey);
+
+        var response = await client.GetAsync("/api/v1/audit");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, "ein simples GET /audit muss ohne Query funktionieren");
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("page").GetInt32().Should().Be(1);
+        body.GetProperty("pageSize").GetInt32().Should().Be(100);
+    }
+
+    [Fact]
     public async Task Rest_invoke_roundtrip_works_like_curl()
     {
         await _gw.AddEchoUpstreamAsync("rest1");
