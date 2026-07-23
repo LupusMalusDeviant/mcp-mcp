@@ -28,7 +28,8 @@ public class ToolInvokerTests
         evt.Caller.Should().Be(admin);
         evt.Server.Should().Be(_w.Server);
         evt.Tool.Should().Be(_w.Echo.Value);
-        evt.CallerRoles.Should().Contain("rolle", "FR-21 verlangt Profil/Rolle des Aufrufers, nicht nur die Id");
+        evt.CallerRoles.Should().Contain("rolle").And.Contain("Profil",
+            "FR-21 verlangt Profil/Rolle des Aufrufers, nicht nur die Id");
     }
 
     [Fact]

@@ -129,9 +129,16 @@ public sealed class AuthorizationService : IAuthorizationService
 
         // Rollenlose Identitäten kommen vor (registriert, aber ohne Grant) — dann trägt das Audit
         // wenigstens den Namen, statt ein leeres Feld zu zeigen.
-        var description = roleNames.Count > 0
-            ? $"{identity.Name} [{string.Join(", ", roleNames)}]"
-            : $"{identity.Name} [ohne Rolle]";
+        var roles = roleNames.Count > 0 ? string.Join(", ", roleNames) : "ohne Rolle";
+
+        // FR-21 verlangt „Profil/Rolle". Das zugeordnete Tool-Profil bestimmt, welche Tools der
+        // Aufrufer überhaupt sieht — beim Nachvollziehen eines Calls ist das oft die wichtigere
+        // Angabe als die Rolle. Fehlt es, sagt das Audit das ausdrücklich statt es zu verschweigen.
+        var profileName = identity.Profile is { } profileId
+            ? _directory.GetProfile(profileId)?.Name ?? "unbekanntes Profil"
+            : "kein Profil";
+
+        var description = $"{identity.Name} [{roles}] · Profil: {profileName}";
 
         return new CachedSnapshot(
             Version: 0, new CompiledPermissions(global, perServer, perTool), description);
