@@ -11,6 +11,64 @@ public class UpstreamConfigValidatorTests
         "cli", "CLI", UpstreamTransportKind.Cli, Enabled: true,
         Cli: new CliTransportOptions(Environment.ProcessPath!, tools));
 
+    private static readonly string PublisherKey = Convert.ToBase64String(new byte[32]);
+
+    private static UpstreamServerConfig Wasi(
+        IReadOnlyList<string>? pinned = null,
+        WasiExecutionLimits? limits = null) => new(
+        "wasi", "WASI", UpstreamTransportKind.Wasi, Enabled: true,
+        Wasi: new WasiTransportOptions(
+            "host.exe", "component.wasm", "component.sig",
+            pinned ?? [PublisherKey],
+            Limits: limits));
+
+    [Fact]
+    public void Valid_wasi_config_passes()
+    {
+        var act = () => UpstreamConfigValidator.Validate(Wasi());
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Wasi_without_a_pinned_publisher_is_rejected()
+    {
+        // Fail-closed: eine leere Liste heißt NICHT "jeder Publisher ist ok".
+        var act = () => UpstreamConfigValidator.Validate(Wasi(pinned: []));
+
+        act.Should().Throw<ArgumentException>().WithMessage("*PinnedPublishers*");
+    }
+
+    [Fact]
+    public void Wasi_publisher_key_must_be_a_base64_32_byte_key()
+    {
+        var act = () => UpstreamConfigValidator.Validate(Wasi(pinned: ["nicht-base64!"]));
+
+        act.Should().Throw<ArgumentException>().WithMessage("*32-Byte*");
+    }
+
+    [Fact]
+    public void Wasi_rejects_non_positive_limits()
+    {
+        var act = () => UpstreamConfigValidator.Validate(
+            Wasi(limits: new WasiExecutionLimits(MaxOutputBytes: 0)));
+
+        act.Should().Throw<ArgumentException>().WithMessage("*MaxOutputBytes*");
+    }
+
+    [Fact]
+    public void Wasi_options_on_another_transport_are_rejected()
+    {
+        var config = new UpstreamServerConfig(
+            "mix", "Mix", UpstreamTransportKind.Stdio, Enabled: true,
+            Stdio: new StdioTransportOptions("echo", []),
+            Wasi: new WasiTransportOptions("host.exe", "c.wasm", "c.sig", [PublisherKey]));
+
+        var act = () => UpstreamConfigValidator.Validate(config);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*widersprüchliche Konfiguration*");
+    }
+
     [Fact]
     public void Valid_stdio_config_passes()
     {

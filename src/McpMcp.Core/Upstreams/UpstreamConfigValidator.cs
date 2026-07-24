@@ -76,6 +76,7 @@ public static partial class UpstreamConfigValidator
             UpstreamTransportKind.StreamableHttp => ("Http", config.Http is not null),
             UpstreamTransportKind.OpenApi => ("OpenApi", config.OpenApi is not null),
             UpstreamTransportKind.Cli => ("Cli", config.Cli is not null),
+            UpstreamTransportKind.Wasi => ("Wasi", config.Wasi is not null),
             _ => throw new ArgumentException($"Unbekannter Transport: {config.Kind}.", nameof(config)),
         };
 
@@ -91,6 +92,7 @@ public static partial class UpstreamConfigValidator
             (Name: "Http", Set: config.Http is not null, For: UpstreamTransportKind.StreamableHttp),
             (Name: "OpenApi", Set: config.OpenApi is not null, For: UpstreamTransportKind.OpenApi),
             (Name: "Cli", Set: config.Cli is not null, For: UpstreamTransportKind.Cli),
+            (Name: "Wasi", Set: config.Wasi is not null, For: UpstreamTransportKind.Wasi),
         };
         foreach (var extra in extras)
         {
@@ -107,9 +109,83 @@ public static partial class UpstreamConfigValidator
             throw new ArgumentException("Stdio.Command darf nicht leer sein.", nameof(config));
         }
 
+        if (config.Kind == UpstreamTransportKind.Wasi)
+        {
+            ValidateWasi(config.Wasi!, config);
+        }
+
         if (config.Kind == UpstreamTransportKind.Cli)
         {
             ValidateCli(config.Cli!, config);
+        }
+    }
+
+    /// <summary>
+    /// Prüft die WASI-Upstream-Konfiguration (ADR-0020). Fail-closed: ohne gepinnten Publisher
+    /// wird gar nichts geladen — eine leere Liste ist ein Konfigurationsfehler, kein "alles
+    /// erlaubt".
+    /// </summary>
+    private static void ValidateWasi(WasiTransportOptions wasi, UpstreamServerConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(wasi.HostExecutable))
+        {
+            throw new ArgumentException("Wasi.HostExecutable darf nicht leer sein.", nameof(config));
+        }
+
+        if (string.IsNullOrWhiteSpace(wasi.ComponentPath))
+        {
+            throw new ArgumentException("Wasi.ComponentPath darf nicht leer sein.", nameof(config));
+        }
+
+        if (string.IsNullOrWhiteSpace(wasi.SignaturePath))
+        {
+            throw new ArgumentException(
+                "Wasi.SignaturePath darf nicht leer sein — unsignierte Components werden nicht geladen.",
+                nameof(config));
+        }
+
+        if (wasi.PinnedPublishers is null || wasi.PinnedPublishers.Count == 0)
+        {
+            throw new ArgumentException(
+                "Wasi.PinnedPublishers darf nicht leer sein (fail-closed: ohne gepinnten Publisher lädt der Host nichts).",
+                nameof(config));
+        }
+
+        foreach (var publisher in wasi.PinnedPublishers)
+        {
+            if (string.IsNullOrWhiteSpace(publisher)
+                || !Convert.TryFromBase64String(publisher, new byte[64], out var written)
+                || written != 32)
+            {
+                throw new ArgumentException(
+                    "Jeder Wasi.PinnedPublishers-Eintrag muss ein Base64-kodierter 32-Byte-Ed25519-Public-Key sein.",
+                    nameof(config));
+            }
+        }
+
+        if (wasi.StartupTimeoutSeconds <= 0)
+        {
+            throw new ArgumentException("Wasi.StartupTimeoutSeconds muss positiv sein.", nameof(config));
+        }
+
+        if (wasi.Limits is { } limits)
+        {
+            if (limits.MaxOutputBytes <= 0)
+            {
+                throw new ArgumentException("Wasi.Limits.MaxOutputBytes muss positiv sein.", nameof(config));
+            }
+
+            if (limits.MaxMemoryBytes is <= 0)
+            {
+                throw new ArgumentException("Wasi.Limits.MaxMemoryBytes muss positiv sein.", nameof(config));
+            }
+
+            if (limits.TimeoutMs is 0 || limits.Fuel is 0)
+            {
+                throw new ArgumentException(
+                    "Wasi.Limits: TimeoutMs und Fuel müssen positiv sein (weglassen = kein Limit).",
+                    nameof(config));
+            }
         }
     }
 

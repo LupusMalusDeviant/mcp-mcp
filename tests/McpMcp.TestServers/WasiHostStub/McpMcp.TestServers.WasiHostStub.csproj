@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <Description>Stub-Host, der den WASI-IPC-Vertrag (ADR-0020) spricht — testet den Connector ohne Rust-Toolchain.</Description>
+  </PropertyGroup>
+
+</Project>

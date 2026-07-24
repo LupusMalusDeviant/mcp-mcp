@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpMcp.Upstream\McpMcp.Upstream.csproj" />
     <ProjectReference Include="..\McpMcp.TestServers\CliProbe\McpMcp.TestServers.CliProbe.csproj" />
+    <ProjectReference Include="..\McpMcp.TestServers\WasiHostStub\McpMcp.TestServers.WasiHostStub.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />

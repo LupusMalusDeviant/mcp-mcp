@@ -8,6 +8,7 @@ public enum UpstreamTransportKind
     StreamableHttp = 1,
     OpenApi = 2,
     Cli = 3,
+    Wasi = 4,
 }
 
 public enum UpstreamState
@@ -163,7 +164,50 @@ public sealed record UpstreamServerConfig(
     OpenApiTransportOptions? OpenApi = null,
     RestartPolicy? Restart = null,
     TimeSpan? CallTimeout = null,
-    CliTransportOptions? Cli = null);
+    CliTransportOptions? Cli = null,
+    WasiTransportOptions? Wasi = null);
+
+/// <summary>
+/// Ein signiertes WebAssembly-Component als Upstream (ADR-0020, Plan 0003/WP2). Die Ausführung
+/// läuft in einem eigenständigen Rust-Host-Prozess, den das Gateway über einen versionierten
+/// IPC-Vertrag ansteuert — .NET kann WASI-P2-Components nicht in-process ausführen.
+/// <para>
+/// <see cref="ComponentPath"/> und <see cref="SignaturePath"/> zeigen auf die Component-Bytes und
+/// die zugehörige detached Ed25519-Signatur. Geladen wird nur, wenn die Signatur zu einem der
+/// <see cref="PinnedPublishers"/> passt (Base64, je 32 Byte) — eine leere Liste lädt nichts
+/// (fail-closed). <see cref="Grants"/> sind standardmäßig leer: kein Dateisystem, kein Netzwerk,
+/// kein Environment, keine Secrets.
+/// </para>
+/// </summary>
+public sealed record WasiTransportOptions(
+    string HostExecutable,
+    string ComponentPath,
+    string SignaturePath,
+    IReadOnlyList<string> PinnedPublishers,
+    WasiCapabilityGrants? Grants = null,
+    WasiExecutionLimits? Limits = null,
+    int StartupTimeoutSeconds = 30,
+    IReadOnlyList<string>? HostArguments = null);
+
+/// <summary>
+/// Die Host-Capabilities, die ein Component erhält — Spiegel des Grant-Modells im Rust-Host.
+/// Alles leer/false = default-deny; nicht gewährte Imports werden vor der Instanziierung
+/// abgewiesen.
+/// </summary>
+public sealed record WasiCapabilityGrants(
+    IReadOnlyList<string>? FilesystemPreopens = null,
+    IReadOnlyList<string>? NetworkAllow = null,
+    IReadOnlyList<string>? Environment = null,
+    IReadOnlyList<string>? Secrets = null,
+    bool Clock = false,
+    bool Random = false);
+
+/// <summary>Ausführungslimits pro Aufruf; werden an den Host durchgereicht.</summary>
+public sealed record WasiExecutionLimits(
+    ulong? Fuel = 50_000_000,
+    ulong? TimeoutMs = 5_000,
+    long? MaxMemoryBytes = 64 * 1024 * 1024,
+    int MaxOutputBytes = 64 * 1024);
 
 public sealed record ToolDescriptor(
     string Name,

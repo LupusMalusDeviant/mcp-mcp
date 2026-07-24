@@ -17,6 +17,9 @@
     <Project Path="tests/McpMcp.Upstream.Tests/McpMcp.Upstream.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/McpMcp.TestServers/" />
+  <Folder Name="/tests/McpMcp.TestServers/WasiHostStub/">
+    <Project Path="tests/McpMcp.TestServers/WasiHostStub/McpMcp.TestServers.WasiHostStub.csproj" />
+  </Folder>
   <Folder Name="/tests/McpMcp.TestServers/CliProbe/">
     <Project Path="tests/McpMcp.TestServers/CliProbe/McpMcp.TestServers.CliProbe.csproj" />
   </Folder>
