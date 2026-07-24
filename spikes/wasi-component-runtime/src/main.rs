@@ -48,9 +48,17 @@ fn run() -> Result<()> {
                 serde_json::to_string_pretty(&compare_with_container(&image, samples)?)?
             );
         }
+        Some("host") => {
+            if arguments.next().is_some() {
+                bail!("usage: mcpmcp-wasi-component-spike host");
+            }
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            mcpmcp_wasi_component_spike::host::serve(&mut stdin.lock(), &mut stdout.lock())?;
+        }
         _ => {
             bail!(
-                "usage:\n  mcpmcp-wasi-component-spike discover <wit-path> [world]\n  mcpmcp-wasi-component-spike probe\n  mcpmcp-wasi-component-spike compare-container <image> [samples]"
+                "usage:\n  mcpmcp-wasi-component-spike discover <wit-path> [world]\n  mcpmcp-wasi-component-spike probe\n  mcpmcp-wasi-component-spike compare-container <image> [samples]\n  mcpmcp-wasi-component-spike host"
             );
         }
     }

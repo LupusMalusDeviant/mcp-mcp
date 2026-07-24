@@ -13,12 +13,14 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wit_component::{ComponentEncoder, StringEncoding, dummy_module, embed_component_metadata};
 use wit_parser::{Function, ManglingAndAbi, Resolve, Type, TypeDefKind, WorldItem, WorldKey};
 
+pub mod host;
+
 const NO_IMPORT_COMPONENT: &str = include_str!("../fixtures/no-import.component.wat");
 const DENIED_IMPORT_COMPONENT: &str = include_str!("../fixtures/denied-import.component.wat");
 const INFINITE_COMPONENT: &str = include_str!("../fixtures/infinite.component.wat");
 const MEMORY_GROWTH_COMPONENT: &str = include_str!("../fixtures/memory-growth.component.wat");
 const CONTROL_PLANE_WIT: &str = include_str!("../../../docs/spikes/fixtures/control-plane.wit");
-const RUNTIME_VERSION: &str = "wasmtime-47.0.2";
+pub const RUNTIME_VERSION: &str = "wasmtime-47.0.2";
 const WASI_GUEST_COMPONENT: &[u8] = include_bytes!("../fixtures/wasi-p2-guest.component.wasm");
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
