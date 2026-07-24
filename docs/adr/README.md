@@ -36,6 +36,7 @@ Ein Architecture Decision Record dokumentiert eine einzelne, wichtige Architektu
 | [0017](./0017-wasi-component-runtime.md) | WASI Component Runtime | Vorgeschlagen | 2026-07-24 | — |
 | [0018](./0018-native-prozess-und-container-isolation.md) | Native Prozess- und Container-Isolation | Vorgeschlagen | 2026-07-24 | — |
 | [0019](./0019-langlaufende-tasks-und-events.md) | Persistentes Task- und Event-Modell | Vorgeschlagen | 2026-07-24 | — |
+| [0020](./0020-wasi-runtime-out-of-process-rust-host.md) | WASI-Runtime als Out-of-Process-Rust-Host hinter dem Connector-Vertrag | Akzeptiert | 2026-07-24 | — |
 
 ## Beitragen
 

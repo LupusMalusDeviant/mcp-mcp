@@ -2,6 +2,23 @@
 
 ## 2026-07-24 — Run
 
+**Aufgabe:** ADR für die M5-Architekturentscheidung — WASI-Runtime als Out-of-Process-Rust-Host hinter dem Connector-Vertrag.
+
+**Entscheidungen:**
+- Kontext/Optionen/Entscheidung im Prompt vorgegeben (gestützt auf Recherche: wasmtime-dotnet ohne Component Model) → keine Rückfragen; Status „Akzeptiert" (vom Product Owner bestätigt).
+- Supersede: nein — additiv, baut auf ADR-0016/0017/0018 auf.
+- Index docs/adr/README.md um Zeile 0020 erweitert.
+
+**Artefakte:**
+- docs/adr/0020-wasi-runtime-out-of-process-rust-host.md
+- docs/adr/README.md (Index-Zeile 0020)
+
+**Status:** abgeschlossen
+
+---
+
+## 2026-07-24 — Run
+
 **Aufgabe:** ADR für CLI-Programme als vierten Upstream-Transport (UpstreamTransportKind.Cli) schreiben.
 
 **Entscheidungen:**
