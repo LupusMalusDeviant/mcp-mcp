@@ -309,9 +309,53 @@ internal static class ApiEndpoints
                 $"approval-tool-{(body.Required ? "required" : "cleared")}:{body.Tool}");
             return Results.NoContent();
         });
+
+        MapWebhookManagement(api);
     }
 
     private sealed record ApprovalToolToggle(string Tool, bool Required);
+
+    private static void MapWebhookManagement(RouteGroupBuilder api)
+    {
+        // Verwaltung der Webhooks (FR-20). Der Trigger-Endpunkt selbst liegt außerhalb von /api
+        // (unauthentifiziert, signaturgeschützt); hier nur das Anlegen/Auflisten/Entfernen.
+        var hooks = api.MapGroup("/webhooks").AddEndpointFilter(RequireAdminAsync);
+
+        hooks.MapGet("/", async (IWebhookStore store, CancellationToken ct) =>
+            Results.Ok(await store.ListAsync(ct)));
+
+        hooks.MapPost("/", async (
+            WebhookCreate body, HttpContext ctx, IWebhookStore store, IAuditSink audit,
+            TimeProvider time, CancellationToken ct) =>
+        {
+            var (def, secret) = await store.CreateAsync(
+                body.Name, new IdentityId(body.CallerId), new NamespacedToolName(body.Tool), ct);
+            AuditManagement(audit, time, ctx, AuditEventKind.ConfigChanged, null, $"webhook-added:{def.Id}");
+            // Secret genau einmal — danach nur noch verschlüsselt gehalten.
+            return Results.Created($"/api/v1/webhooks/{def.Id}", new { def.Id, Secret = secret });
+        });
+
+        hooks.MapPost("/{id:guid}/enabled", async (
+            Guid id, EnabledRequest body, HttpContext ctx, IWebhookStore store, IAuditSink audit,
+            TimeProvider time, CancellationToken ct) =>
+        {
+            await store.SetEnabledAsync(id, body.Enabled, ct);
+            AuditManagement(audit, time, ctx, AuditEventKind.ConfigChanged, null,
+                $"webhook-{(body.Enabled ? "enabled" : "disabled")}:{id}");
+            return Results.NoContent();
+        });
+
+        hooks.MapDelete("/{id:guid}", async (
+            Guid id, HttpContext ctx, IWebhookStore store, IAuditSink audit,
+            TimeProvider time, CancellationToken ct) =>
+        {
+            await store.RemoveAsync(id, ct);
+            AuditManagement(audit, time, ctx, AuditEventKind.ConfigChanged, null, $"webhook-removed:{id}");
+            return Results.NoContent();
+        });
+    }
+
+    private sealed record WebhookCreate(string Name, Guid CallerId, string Tool);
 
     private static IdentityId Identity(HttpContext ctx) => (IdentityId)ctx.Items[ApiKeyAuthMiddleware.IdentityItemKey]!;
 

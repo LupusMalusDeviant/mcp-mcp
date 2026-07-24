@@ -169,6 +169,12 @@ builder.Services.AddSingleton<IContentGuard>(sp => sp.GetRequiredService<SecretG
 // ── Freigabe-Flows (FR-32, ADR-0012) ─────────────────────────────────────────
 builder.Services.AddSingleton<ApprovalPolicyStore>();
 builder.Services.AddSingleton<IApprovalPolicy>(sp => sp.GetRequiredService<ApprovalPolicyStore>());
+
+// ── Webhook-Trigger (FR-20, ADR-0013) ────────────────────────────────────────
+builder.Services.AddSingleton<IWebhookStore>(sp => new WebhookStore(
+    sp.GetRequiredService<IDbContextFactory<McpMcpDbContext>>(),
+    sp.GetRequiredService<IDataProtectionProvider>(),
+    sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<IApprovalStore>(sp => new ApprovalStore(
     sp.GetRequiredService<IDbContextFactory<McpMcpDbContext>>(), sp.GetRequiredService<TimeProvider>()));
 
@@ -311,6 +317,7 @@ app.UseMiddleware<ApiKeyAuthMiddleware>();
 app.MapMcp("/mcp");
 app.MapGatewayApi();
 app.MapAuthEndpoints();
+app.MapWebhookEndpoint();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));

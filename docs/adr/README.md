@@ -29,6 +29,7 @@ Ein Architecture Decision Record dokumentiert eine einzelne, wichtige Architektu
 | [0010](./0010-sampling-elicitation-nicht-durchreichen.md) | Sampling/Elicitation nicht durchreichen — Korrelation strukturell nicht lösbar | Akzeptiert | 2026-07-18 | — |
 | [0011](./0011-secret-erkennung-als-guardrail.md) | Secret-Erkennung als hot-swappable Guardrail im Invoker | Akzeptiert | 2026-07-20 | — |
 | [0012](./0012-approval-flows-asynchron.md) | Approval-Flows asynchron (sofort ablehnen, Freigabe pro Call) statt blockierend | Akzeptiert | 2026-07-20 | — |
+| [0013](./0013-webhook-trigger.md) | Webhook-Trigger — HMAC-signiert, ein Tool, feste Identität (Ketten als v2) | Akzeptiert | 2026-07-20 | — |
 
 ## Beitragen
 

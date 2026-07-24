@@ -41,6 +41,8 @@ public sealed class McpMcpDbContext : DbContext
 
     public DbSet<ApprovalToolRow> ApprovalTools => Set<ApprovalToolRow>();
 
+    public DbSet<WebhookRow> Webhooks => Set<WebhookRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ConfigVersionRow>(e =>
@@ -141,6 +143,16 @@ public sealed class McpMcpDbContext : DbContext
         {
             e.HasKey(r => r.Tool);
             e.Property(r => r.Tool).HasMaxLength(300);
+        });
+
+        modelBuilder.Entity<WebhookRow>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Name).IsRequired().HasMaxLength(200);
+            e.Property(r => r.Tool).IsRequired().HasMaxLength(300);
+            // Das HMAC-Secret liegt DataProtection-verschlüsselt (ADR-0013), nicht als Hash —
+            // es wird zum Nachrechnen der Signatur gebraucht.
+            e.Property(r => r.EncryptedSecret).IsRequired();
         });
 
         // Provider-neutral: Zeitstempel als UTC-Ticks (bigint). SQLite kann DateTimeOffset weder
@@ -355,6 +367,25 @@ public sealed class ApprovalRequestRow
 public sealed class ApprovalToolRow
 {
     public string Tool { get; set; } = string.Empty;
+}
+
+/// <summary>Ein registrierter Webhook (FR-20, ADR-0013).</summary>
+public sealed class WebhookRow
+{
+    public Guid Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public Guid CallerId { get; set; }
+
+    public string Tool { get; set; } = string.Empty;
+
+    /// <summary>HMAC-Secret, DataProtection-verschlüsselt.</summary>
+    public byte[] EncryptedSecret { get; set; } = [];
+
+    public bool Enabled { get; set; } = true;
+
+    public long CreatedAtTicks { get; set; }
 }
 
 /// <summary>Versioniertes Text-Asset (Skill/Prompt/Instruction, FR-40, WP6.4). Append-only pro Version.</summary>

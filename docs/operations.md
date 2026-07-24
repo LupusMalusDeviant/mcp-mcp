@@ -116,6 +116,27 @@ Die Freigabe bindet an `(Identität, Tool, Argument-Fingerprint)` und verfällt 
 Welche Tools freigabepflichtig sind, ist unter **Freigaben** (Admin-Bereich) zur Laufzeit
 schaltbar, ohne Neustart.
 
+## Webhook-Trigger
+
+Ein eingehender Webhook löst genau **einen** Tool-Aufruf im Namen einer festen Identität aus
+(FR-20, [ADR-0013](adr/0013-webhook-trigger.md)). Anlegen unter **Webhooks** (Admin): Name,
+Identität und Tool wählen — das Signatur-Secret wird **einmalig** angezeigt.
+
+Der Trigger-Endpunkt ist `POST /webhooks/{id}/trigger` und ist der **einzige unauthentifizierte
+Pfad**. Absicherung über HMAC-SHA256:
+
+- Der Absender signiert `{timestamp}.{body}` mit dem Secret und schickt zwei Header:
+  `X-McpMcp-Signature: sha256=<hmac>` und `X-McpMcp-Timestamp: <unix-sekunden>`.
+- Anfragen älter als **5 Minuten** werden abgewiesen (Replay-Schutz).
+- Fehlende, falsche oder abgelaufene Signatur → **401**. Eine unbekannte Webhook-Id liefert
+  ebenfalls 401, damit sich keine gültigen Ids durchprobieren lassen.
+
+Der ausgelöste Aufruf durchläuft die **volle Pipeline** — RBAC der gebundenen Identität, Guardrail,
+Rate-Limit — und erscheint im Audit mit Herkunft **`Webhook`**. Ein Webhook kann damit nie mehr,
+als seine Identität ohnehin darf.
+
+**Grenze:** Ein Webhook löst genau ein Tool aus, keine Kette. Mehrstufige Abläufe sind v2.
+
 ## Ergebnis-Kompression
 
 Ein einzelnes umfangreiches Tool-Ergebnis kann die Token-Ersparnis der Profile wieder auffressen.

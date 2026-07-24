@@ -11,6 +11,9 @@ public enum CallOrigin
 
     /// <summary>Kein Aufrufer — vom Gateway selbst ausgelöst (Systemereignisse, FR-22). Wert am Ende: die Zahlen liegen persistiert in der DB.</summary>
     System = 3,
+
+    /// <summary>Von einem eingehenden, signierten Webhook ausgelöst (FR-20, ADR-0013). Wert am Ende — persistiert.</summary>
+    Webhook = 4,
 }
 
 public enum InvocationStatus
