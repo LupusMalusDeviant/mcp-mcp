@@ -176,7 +176,7 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
             foreach (var tool in inventory.Tools)
             {
                 AddEntry(entries, seen, status, tool.Name, tool.Description ?? string.Empty,
-                    tool.InputSchema, CatalogEntryKind.Tool);
+                    tool.InputSchema, CatalogEntryKind.Tool, tool.Risk, tool.RequiresApproval);
             }
 
             foreach (var resource in inventory.Resources)
@@ -203,7 +203,9 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
         string name,
         string description,
         JsonElement schema,
-        CatalogEntryKind kind)
+        CatalogEntryKind kind,
+        CapabilityRisk risk = CapabilityRisk.Read,
+        bool requiresApproval = false)
     {
         var namespaced = NamespacedToolName.Create(status.Slug, name);
 
@@ -223,7 +225,8 @@ public sealed partial class ToolCatalog : IToolCatalog, IDisposable
         }
 
         entries.Add(new CatalogEntry(
-            namespaced, status.Id, description, schema, kind, EstimateTokens(name, description, schema)));
+            namespaced, status.Id, description, schema, kind,
+            EstimateTokens(name, description, schema), risk, requiresApproval));
     }
 
     private void Raise(CatalogChangeKind kind, IReadOnlyList<ServerId> servers)

@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Security.Cryptography.X509Certificates;
+
 using McpMcp.Abstractions;
 using McpMcp.Core.Audit;
 using McpMcp.Core.Catalog;
@@ -11,8 +14,6 @@ using McpMcp.Server;
 using McpMcp.Upstream;
 using McpMcp.Web;
 using McpMcp.Web.Components;
-using System.Globalization;
-using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -90,7 +91,17 @@ var retentionDays = int.TryParse(
     NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDays) && parsedDays > 0
     ? parsedDays
     : 30;
-builder.Services.AddSingleton(new PersistenceOptions { AuditRetention = TimeSpan.FromDays(retentionDays) });
+var auditMode = string.Equals(
+    Environment.GetEnvironmentVariable("MCPMCP_AUDIT_MODE"),
+    "compliance",
+    StringComparison.OrdinalIgnoreCase)
+    ? AuditDeliveryMode.Compliance
+    : AuditDeliveryMode.BestEffort;
+builder.Services.AddSingleton(new PersistenceOptions
+{
+    AuditRetention = TimeSpan.FromDays(retentionDays),
+    AuditMode = auditMode,
+});
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<GatewayIdentity>();
 
@@ -137,7 +148,10 @@ builder.Services.AddSingleton<IToolCatalog>(sp => sp.GetRequiredService<ToolCata
 
 // ── Audit (ADR-0007) & Invocation (ADR-0008) ─────────────────────────────────
 builder.Services.AddSingleton<ChannelAuditSink>(sp =>
-    new ChannelAuditSink(sp.GetRequiredService<PersistenceOptions>().AuditChannelCapacity));
+{
+    var options = sp.GetRequiredService<PersistenceOptions>();
+    return new ChannelAuditSink(options.AuditChannelCapacity, options.AuditMode);
+});
 builder.Services.AddSingleton<IAuditSink>(sp => sp.GetRequiredService<ChannelAuditSink>());
 builder.Services.AddSingleton<AuditBatchWriter>();
 builder.Services.AddSingleton<IAuditQuery, EfAuditQuery>();
@@ -208,7 +222,11 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddMcpServer(options =>
     {
-        options.ServerInfo = new Implementation { Name = "mcp-mcp", Version = "0.4.0" };
+        options.ServerInfo = new Implementation
+        {
+            Name = "mcp-mcp",
+            Version = McpMcpProductInfo.Version,
+        };
         options.ServerInstructions =
             "MCP-MCP gateway: aggregated tools from multiple upstream servers. " +
             "Use search_tools to discover capabilities, describe_tool for schemas, invoke_tool to call.";
@@ -251,7 +269,8 @@ var otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
 {
     builder.Services.AddOpenTelemetry()
-        .ConfigureResource(r => r.AddService("mcp-mcp", serviceVersion: "1.1.0"))
+        .ConfigureResource(r => r.AddService(
+            "mcp-mcp", serviceVersion: McpMcpProductInfo.Version))
         .WithMetrics(metrics => metrics
             .AddMeter(ToolInvoker.MeterName)
             .AddAspNetCoreInstrumentation()
@@ -322,20 +341,34 @@ app.MapWebhookEndpoint();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
-app.MapGet("/readyz", async (IDbContextFactory<McpMcpDbContext> factory, IUpstreamSupervisor supervisor, CancellationToken ct) =>
+app.MapGet("/readyz", async (
+    IDbContextFactory<McpMcpDbContext> factory,
+    IUpstreamSupervisor supervisor,
+    ChannelAuditSink audit,
+    CancellationToken ct) =>
 {
     await using var db = await factory.CreateDbContextAsync(ct);
     var dbOk = await db.Database.CanConnectAsync(ct);
     var statuses = supervisor.Statuses;
     // Anonymer Endpoint: nur aggregierte Zahlen, keine Slugs/Topologie (Info-Disclosure vermeiden).
-    return dbOk
+    var ready = dbOk && (audit.Mode != AuditDeliveryMode.Compliance || audit.IsHealthy);
+    return ready
         ? Results.Ok(new
         {
             status = "ready",
             upstreamsTotal = statuses.Count,
             upstreamsHealthy = statuses.Count(s => s.State == UpstreamState.Healthy),
+            auditMode = audit.Mode.ToString(),
+            auditHealthy = audit.IsHealthy,
+            auditDropped = audit.DroppedCount,
         })
-        : Results.Json(new { status = "db-unreachable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        : Results.Json(new
+        {
+            status = dbOk ? "audit-unavailable" : "db-unreachable",
+            auditMode = audit.Mode.ToString(),
+            auditHealthy = audit.IsHealthy,
+            auditDropped = audit.DroppedCount,
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
 
 app.Run();

@@ -1,0 +1,17 @@
+# Eigenständiges Workspace-Root, damit dieses Guest-Crate NICHT Teil des Spike-Builds wird.
+# Es wird separat für wasm32-wasip2 gebaut; das erzeugte Component liegt als Fixture im Spike.
+[workspace]
+
+[package]
+name = "mcpmcp-wasi-guest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "mcpmcp-wasi-guest"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "s"
+strip = true

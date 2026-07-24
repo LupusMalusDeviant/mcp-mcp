@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using AwesomeAssertions;
 using McpMcp.Abstractions;
+using McpMcp.Core.Upstreams;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace McpMcp.Integration.Tests.Gateway;
@@ -176,5 +178,78 @@ public sealed class RestFacadeTests : IClassFixture<GatewayFixture>
             stdio = new { command = "egal", arguments = Array.Empty<string>() },
         });
         duplicate.StatusCode.Should().Be(HttpStatusCode.BadRequest, "Slug-Kollision → verständlicher 400");
+    }
+
+    [Fact]
+    public async Task Cli_secrets_are_masked_in_configuration_history()
+    {
+        const string secret = "cli-history-secret-938475";
+        var id = await _gw.Supervisor.AddAsync(
+            new UpstreamServerConfig(
+                "clihistory", "CLI history", UpstreamTransportKind.Cli, Enabled: false,
+                Cli: new CliTransportOptions(
+                    Environment.ProcessPath!,
+                    [new CliToolSpec("run")],
+                    EnvironmentVariables: new Dictionary<string, string> { ["TOKEN"] = secret })),
+            TestContext.Current.CancellationToken);
+        var (_, apiKey) = await _gw.SeedAdminAsync("cli-history-admin");
+        using var client = CreateApiClient(apiKey);
+
+        var response = await client.GetAsync($"/api/v1/servers/{id.Value}/history");
+        var raw = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        raw.Should().NotContain(secret).And.Contain(
+            $"\"TOKEN\":\"{UpstreamConfigRedactor.Mask}\"");
+    }
+
+    [Fact]
+    public async Task Api_reconfigure_preserves_masked_cli_secrets_and_allows_explicit_reset()
+    {
+        const string secret = "cli-edit-secret-648275";
+        var original = new UpstreamServerConfig(
+            "cliedit", "CLI edit", UpstreamTransportKind.Cli, Enabled: false,
+            Cli: new CliTransportOptions(
+                Environment.ProcessPath!,
+                [new CliToolSpec("run")],
+                EnvironmentVariables: new Dictionary<string, string> { ["TOKEN"] = secret }));
+        var id = await _gw.Supervisor.AddAsync(original, TestContext.Current.CancellationToken);
+        var (_, apiKey) = await _gw.SeedAdminAsync("cli-edit-admin");
+        using var client = CreateApiClient(apiKey);
+
+        var maskedEdit = original with
+        {
+            DisplayName = "CLI edited",
+            Cli = original.Cli! with
+            {
+                EnvironmentVariables = new Dictionary<string, string>
+                {
+                    ["TOKEN"] = UpstreamConfigRedactor.Mask,
+                },
+            },
+        };
+        (await client.PutAsJsonAsync($"/api/v1/servers/{id.Value}", maskedEdit))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var store = _gw.Services.GetRequiredService<IUpstreamConfigStore>();
+        var afterMaskedEdit = (await store.GetHistoryAsync(id, TestContext.Current.CancellationToken))
+            .OrderByDescending(item => item.Version.Value)
+            .First().Config;
+        afterMaskedEdit.Cli!.EnvironmentVariables!["TOKEN"].Should().Be(secret);
+
+        var reset = maskedEdit with
+        {
+            Cli = maskedEdit.Cli! with
+            {
+                EnvironmentVariables = new Dictionary<string, string>(),
+            },
+        };
+        (await client.PutAsJsonAsync($"/api/v1/servers/{id.Value}", reset))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var afterReset = (await store.GetHistoryAsync(id, TestContext.Current.CancellationToken))
+            .OrderByDescending(item => item.Version.Value)
+            .First().Config;
+        afterReset.Cli!.EnvironmentVariables.Should().BeEmpty();
     }
 }

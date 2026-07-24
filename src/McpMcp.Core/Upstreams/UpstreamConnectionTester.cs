@@ -90,6 +90,11 @@ public sealed class UpstreamConnectionTester : IUpstreamConnectionTester
             yield return value;
         }
 
+        foreach (var value in config.Cli?.EnvironmentVariables?.Values ?? [])
+        {
+            yield return value;
+        }
+
         if (config.OpenApi?.Credential is { } credential)
         {
             yield return credential;

@@ -138,4 +138,19 @@ public class ApprovalFlowTests
 
         result.Status.Should().Be(InvocationStatus.Success);
     }
+
+    [Fact]
+    public async Task Manifest_risk_requires_approval_without_a_manually_configured_policy()
+    {
+        var world = new InvokerTestWorld(echoRequiresApproval: true);
+        var admin = world.RegisterAdmin();
+        var invoker = world.WithApproval(new FakePolicy(), new FakeStore());
+
+        var result = await invoker.InvokeAsync(
+            InvokerTestWorld.Request(admin, world.Echo, new { message = "danger" }),
+            TestContext.Current.CancellationToken);
+
+        result.Status.Should().Be(InvocationStatus.ApprovalRequired);
+        world.Connection.LastToolName.Should().BeNull();
+    }
 }

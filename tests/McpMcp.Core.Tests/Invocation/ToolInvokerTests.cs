@@ -210,4 +210,19 @@ public class ToolInvokerTests
         var json = evt.RedactedArguments!.Value.GetRawText();
         json.Should().Contain("offen").And.NotContain("geheim123");
     }
+
+    [Fact]
+    public async Task Write_only_manifest_parameters_are_redacted_even_with_neutral_names()
+    {
+        var world = new InvokerTestWorld(echoSensitive: true);
+        var admin = world.RegisterAdmin();
+
+        await world.Invoker.InvokeAsync(
+            InvokerTestWorld.Request(admin, world.Echo, new { message = "raw-sensitive-value" }),
+            TestContext.Current.CancellationToken);
+
+        var json = world.Audit.Events.Should().ContainSingle()
+            .Subject.RedactedArguments!.Value.GetRawText();
+        json.Should().Contain("***").And.NotContain("raw-sensitive-value");
+    }
 }

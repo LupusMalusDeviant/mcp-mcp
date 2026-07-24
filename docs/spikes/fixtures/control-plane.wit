@@ -1,0 +1,27 @@
+package mcpmcp:spike@0.1.0;
+
+interface tools {
+  enum mode {
+    fast,
+    safe,
+  }
+
+  record request {
+    id: u64,
+    name: string,
+    mode: mode,
+    tags: list<string>,
+    note: option<string>,
+  }
+
+  record response {
+    accepted: bool,
+    message: string,
+  }
+
+  run: func(input: request) -> result<response, string>;
+}
+
+world connector {
+  export tools;
+}

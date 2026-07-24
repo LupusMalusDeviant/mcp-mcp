@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using AwesomeAssertions;
 using McpMcp.Abstractions;
+using McpMcp.Persistence;
 using McpMcp.Persistence.Audit;
 using Xunit;
 
@@ -53,5 +54,21 @@ public class AuditSinkLatencyTests
         }
 
         sink.DroppedCount.Should().Be(15, "bei vollem Channel wird gezählt verworfen, nie blockiert");
+    }
+
+    [Fact]
+    public void Compliance_mode_never_silently_drops_a_full_channel()
+    {
+        var sink = new ChannelAuditSink(
+            capacity: 1, mode: AuditDeliveryMode.Compliance);
+        var evt = new AuditEvent(
+            DateTimeOffset.UtcNow, null, CallOrigin.Ui, AuditEventKind.ServerLifecycle,
+            null, null, null, null, null, null, null);
+        sink.Record(evt);
+
+        Action act = () => sink.Record(evt);
+
+        act.Should().Throw<AuditUnavailableException>();
+        sink.IsHealthy.Should().BeFalse();
     }
 }

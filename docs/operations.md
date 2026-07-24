@@ -28,6 +28,7 @@ Beide Werte sofort sichern. Verloren? Siehe [Zugang zurücksetzen](#zugang-zurü
 | `MCPMCP_DATA_DIR` | `data` (bzw. `/data` im Container) | Verzeichnis für SQLite-DB **und** DataProtection-Key-Ring |
 | `MCPMCP_DB_PROVIDER` | `sqlite` | `sqlite` oder `postgres` |
 | `MCPMCP_DB_CONNECTION` | `Data Source=<datadir>/mcpmcp.db` | Connection-String (bei Postgres Pflicht) |
+| `MCPMCP_AUDIT_MODE` | `best-effort` | `best-effort` verwirft bei Überlast gezählt; `compliance` meldet Überlast explizit und retryt DB-Fehler mit Backpressure |
 | `ASPNETCORE_URLS` | `http://+:8080` (Container) | Bind-Adresse/Port |
 | `MCPMCP_KEYRING_CERT_PATH` | *(nicht gesetzt)* | PFX-Zertifikat zum Verschlüsseln des Key-Rings (siehe [Key-Ring schützen](#key-ring-schützen)) |
 | `MCPMCP_KEYRING_CERT_PASSWORD` | *(nicht gesetzt)* | Passwort des PFX |
@@ -320,6 +321,20 @@ docker compose run --rm mcpmcp dotnet McpMcp.Server.dll --issue-bootstrap-key
 Ohne Container analog mit `dotnet run --project src/McpMcp.Server -- --reset-ui-admin`. Den Notfall-Zugang nach Gebrauch wieder entfernen, falls er nur der Wiederherstellung diente.
 
 - **UI-Passwort vergessen, aber anderer Admin existiert** → einfacher über die UI (Seite „UI-Nutzer") neu setzen.
+
+## Audit-Betriebsmodi
+
+`best-effort` hält Tool-Calls bei Audit-Überlast nicht auf. Drops werden gezählt, in `/readyz`
+ausgegeben und beim Shutdown geloggt. Fehlgeschlagene DB-Batches werden als Fehler geloggt und
+verworfen.
+
+`compliance` wirft bei vollem Channel einen expliziten `AuditUnavailableException`, markiert
+Readiness als nicht bereit und verwirft fehlgeschlagene DB-Batches nicht; der Writer retryt sie.
+Das kann Shutdown oder Verarbeitung bei längerem DB-Ausfall bewusst blockieren. Für HA ist vor
+Produktionsfreigabe zusätzlich ein durables externes Spool/Queue-Backend erforderlich.
+
+`/readyz` liefert `auditMode`, `auditHealthy` und `auditDropped`. Alarmieren auf
+`auditHealthy=false`, `auditDropped>0` und HTTP 503.
 
 ## Sicherheit
 

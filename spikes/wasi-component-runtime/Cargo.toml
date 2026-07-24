@@ -1,0 +1,28 @@
+[package]
+name = "mcpmcp-wasi-component-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+rust-version = "1.94"
+
+[dependencies]
+anyhow = "1.0.100"
+ed25519-dalek = "2.1.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+wasmtime = { version = "=47.0.2", default-features = false, features = [
+  "anyhow",
+  "component-model",
+  "cranelift",
+  "runtime",
+  "std",
+  "wat",
+] }
+wasmtime-wasi = "=47.0.2"
+wat = "=1.254.0"
+wit-parser = { version = "=0.254.0", default-features = false, features = [
+  "decoding",
+  "std",
+] }
+wit-component = { version = "=0.254.0", features = ["dummy-module"] }

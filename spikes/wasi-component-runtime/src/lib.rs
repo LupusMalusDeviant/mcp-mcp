@@ -1,0 +1,1105 @@
+use std::collections::BTreeSet;
+use std::path::{Component as PathComponent, Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use wasmtime::component::types::ComponentItem;
+use wasmtime::component::{Component, Linker};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wit_component::{ComponentEncoder, StringEncoding, dummy_module, embed_component_metadata};
+use wit_parser::{Function, ManglingAndAbi, Resolve, Type, TypeDefKind, WorldItem, WorldKey};
+
+const NO_IMPORT_COMPONENT: &str = include_str!("../fixtures/no-import.component.wat");
+const DENIED_IMPORT_COMPONENT: &str = include_str!("../fixtures/denied-import.component.wat");
+const INFINITE_COMPONENT: &str = include_str!("../fixtures/infinite.component.wat");
+const MEMORY_GROWTH_COMPONENT: &str = include_str!("../fixtures/memory-growth.component.wat");
+const CONTROL_PLANE_WIT: &str = include_str!("../../../docs/spikes/fixtures/control-plane.wit");
+const RUNTIME_VERSION: &str = "wasmtime-47.0.2";
+const WASI_GUEST_COMPONENT: &[u8] = include_bytes!("../fixtures/wasi-p2-guest.component.wasm");
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityInventory {
+    pub world: String,
+    pub capabilities: Vec<CapabilityDescriptorV1>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityDescriptorV1 {
+    pub native_name: String,
+    pub kind: String,
+    pub execution: String,
+    pub input_type: String,
+    pub result_type: String,
+    pub imports: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProbeReport {
+    pub runtime: &'static str,
+    pub component_sha256: String,
+    pub wit_component_sha256: String,
+    pub imports: Vec<String>,
+    pub exports: Vec<String>,
+    pub wit_component_exports: Vec<String>,
+    pub smoke_result: i32,
+    pub fuel_limit_enforced: bool,
+    pub epoch_timeout_enforced: bool,
+    pub memory_limit_enforced: bool,
+    pub output_limit_enforced: bool,
+    pub compile_milliseconds: f64,
+    pub instantiate_and_call_milliseconds: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IsolationComparisonReport {
+    pub samples: usize,
+    pub wasi_runtime: &'static str,
+    pub wasi_policy: &'static str,
+    pub wasi_cold_start_milliseconds: TimingSummary,
+    pub container_runtime: String,
+    pub container_image: String,
+    pub container_image_id: String,
+    pub container_policy: Vec<&'static str>,
+    pub container_job_milliseconds: TimingSummary,
+    pub qualification: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimingSummary {
+    pub minimum: f64,
+    pub median: f64,
+    pub p95: f64,
+    pub maximum: f64,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct BoundedCapture {
+    pub bytes: Vec<u8>,
+    pub total_bytes: usize,
+    pub truncated: bool,
+}
+
+/// Explizite Host-Capability-Grants, standardmäßig alle leer/aus (default-deny). Ein nicht-leeres
+/// Feld bzw. `true` erlaubt, dass die zugehörige WASI-P2-Kategorie überhaupt importiert werden darf;
+/// die feingranulare Begrenzung (welche Pfade/Ziele) liegt zusätzlich in den jeweiligen Feldern.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityGrants {
+    /// Kanonische Preopen-Wurzeln; leer = kein Dateisystem.
+    pub filesystem_preopens: BTreeSet<String>,
+    /// Netzwerk-Ziel-Allowlist (`host:port`); leer = kein Netzwerk.
+    pub network_allow: BTreeSet<String>,
+    /// Freigegebene Environment-Variablennamen; leer = kein Environment.
+    pub environment: BTreeSet<String>,
+    /// Freigegebene Secret-Capability-Namen; leer = keine Secrets.
+    pub secrets: BTreeSet<String>,
+    /// Uhr-Capability.
+    pub clock: bool,
+    /// Zufallsquelle.
+    pub random: bool,
+}
+
+/// Grant-Kategorie, auf die ein WASI-P2-Import abgebildet wird.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GrantCategory {
+    Filesystem,
+    Network,
+    Environment,
+    Secret,
+    Clock,
+    Random,
+    /// Unbekannter Import — fail-closed, immer verweigert.
+    Unknown,
+}
+
+/// Bildet einen WASI-P2-Interface-Importnamen auf seine Grant-Kategorie ab. Unbekannte Namen sind
+/// bewusst `Unknown` und werden dadurch immer verweigert (fail-closed).
+pub fn classify_import(name: &str) -> GrantCategory {
+    if name.contains("wasi:filesystem") {
+        GrantCategory::Filesystem
+    } else if name.contains("wasi:sockets") {
+        GrantCategory::Network
+    } else if name.contains("wasi:cli/environment") {
+        GrantCategory::Environment
+    } else if name.contains("wasi:clocks") {
+        GrantCategory::Clock
+    } else if name.contains("wasi:random") {
+        GrantCategory::Random
+    } else if name.contains("secret") {
+        GrantCategory::Secret
+    } else {
+        GrantCategory::Unknown
+    }
+}
+
+fn import_is_granted(import: &str, grants: &CapabilityGrants) -> bool {
+    match classify_import(import) {
+        GrantCategory::Filesystem => !grants.filesystem_preopens.is_empty(),
+        GrantCategory::Network => !grants.network_allow.is_empty(),
+        GrantCategory::Environment => !grants.environment.is_empty(),
+        GrantCategory::Secret => !grants.secrets.is_empty(),
+        GrantCategory::Clock => grants.clock,
+        GrantCategory::Random => grants.random,
+        GrantCategory::Unknown => false,
+    }
+}
+
+/// Ein administrativ gepinnter Publisher. Nur diese Public Keys dürfen Component-Bytes signieren;
+/// `key_id` ist der stabile SHA-256-Fingerprint des Public Keys (für Audit und Anzeige).
+pub struct PinnedPublisher {
+    pub key_id: String,
+    pub verifying_key: VerifyingKey,
+}
+
+/// Erzeugt einen gepinnten Publisher aus einem Public Key (SHA-256-Fingerprint als stabile Id).
+pub fn pinned_publisher(verifying_key: VerifyingKey) -> PinnedPublisher {
+    PinnedPublisher {
+        key_id: sha256_hex(verifying_key.as_bytes()),
+        verifying_key,
+    }
+}
+
+/// Verifiziert eine **detached** Ed25519-Signatur über die Component-Bytes gegen die administrativ
+/// gepinnten Publisher. Gibt bei Erfolg die `key_id` des akzeptierenden Publishers zurück.
+/// Manipulierte Bytes, eine ungültige Signatur oder ein nicht gepinnter Schlüssel werden
+/// fail-closed abgewiesen.
+pub fn verify_component_signature(
+    component_bytes: &[u8],
+    signature_bytes: &[u8; 64],
+    pinned: &[PinnedPublisher],
+) -> Result<String> {
+    let signature = Signature::from_bytes(signature_bytes);
+    for publisher in pinned {
+        if publisher
+            .verifying_key
+            .verify(component_bytes, &signature)
+            .is_ok()
+        {
+            return Ok(publisher.key_id.clone());
+        }
+    }
+    bail!("component signature matches no pinned publisher")
+}
+
+/// Auditdatensatz beim Laden/Instanziieren eines Components: identifiziert das Modul über seinen
+/// SHA-256, den akzeptierenden Publisher, die Runtime-Version und die tatsächlich erteilten
+/// Host-Grants. Deterministisch serialisierbar für das Governance-Audit.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantAuditRecord {
+    pub module_sha256: String,
+    pub publisher_key_id: String,
+    pub runtime: &'static str,
+    pub granted_filesystem_preopens: Vec<String>,
+    pub granted_network_allow: Vec<String>,
+    pub granted_environment: Vec<String>,
+    pub granted_secrets: Vec<String>,
+    pub granted_clock: bool,
+    pub granted_random: bool,
+}
+
+/// Baut den [`GrantAuditRecord`] aus den Component-Bytes, dem verifizierten Publisher und den
+/// erteilten Grants. Die Set-Felder werden als sortierte Vecs übernommen (BTreeSet-Ordnung).
+pub fn grant_audit_record(
+    component_bytes: &[u8],
+    publisher_key_id: &str,
+    grants: &CapabilityGrants,
+) -> GrantAuditRecord {
+    GrantAuditRecord {
+        module_sha256: sha256_hex(component_bytes),
+        publisher_key_id: publisher_key_id.to_owned(),
+        runtime: RUNTIME_VERSION,
+        granted_filesystem_preopens: grants.filesystem_preopens.iter().cloned().collect(),
+        granted_network_allow: grants.network_allow.iter().cloned().collect(),
+        granted_environment: grants.environment.iter().cloned().collect(),
+        granted_secrets: grants.secrets.iter().cloned().collect(),
+        granted_clock: grants.clock,
+        granted_random: grants.random,
+    }
+}
+
+/// Lexikalische Preopen-Eingrenzung ohne Dateisystemzugriff (portabel, deterministisch): entfernt
+/// `.`, verarbeitet `..` und weist alles ab, das die Wurzel verlässt (führendes `..`, absolute
+/// Pfade, Root-/Prefix-Komponenten). Erste Verteidigungslinie gegen Path-Traversal.
+pub fn resolve_within_root(root: &Path, requested: &str) -> Result<PathBuf> {
+    let mut stack: Vec<std::ffi::OsString> = Vec::new();
+    for component in Path::new(requested).components() {
+        match component {
+            PathComponent::CurDir => {}
+            PathComponent::ParentDir => {
+                if stack.pop().is_none() {
+                    bail!("path '{requested}' traverses above the preopen root");
+                }
+            }
+            PathComponent::Normal(part) => stack.push(part.to_owned()),
+            PathComponent::RootDir | PathComponent::Prefix(_) => {
+                bail!("path '{requested}' is absolute and escapes the preopen root");
+            }
+        }
+    }
+    let mut resolved = root.to_path_buf();
+    resolved.extend(stack);
+    Ok(resolved)
+}
+
+/// Dateisystem-basierte Eingrenzung: kanonisiert Wurzel und Ziel (löst Symlinks auf) und verlangt,
+/// dass das kanonische Ziel unter der kanonischen Wurzel bleibt. Fängt Symlink-Ausbrüche, die eine
+/// rein lexikalische Prüfung nicht sieht. Wurzel und Ziel müssen existieren.
+pub fn canonical_within_root(root: &Path, target: &Path) -> Result<PathBuf> {
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("preopen root {} is not accessible", root.display()))?;
+    let canonical_target = target
+        .canonicalize()
+        .with_context(|| format!("path {} is not accessible", target.display()))?;
+    if canonical_target.starts_with(&canonical_root) {
+        Ok(canonical_target)
+    } else {
+        bail!(
+            "canonical path {} escapes preopen root {}",
+            canonical_target.display(),
+            canonical_root.display()
+        )
+    }
+}
+
+struct WasiGuestHost {
+    ctx: wasmtime_wasi::WasiCtx,
+    table: wasmtime::component::ResourceTable,
+}
+
+impl wasmtime_wasi::WasiView for WasiGuestHost {
+    fn ctx(&mut self) -> wasmtime_wasi::WasiCtxView<'_> {
+        wasmtime_wasi::WasiCtxView {
+            ctx: &mut self.ctx,
+            table: &mut self.table,
+        }
+    }
+}
+
+/// Instanziiert die echte WASI-P2-Guest-Component. WASI wird dem Linker NUR hinzugefügt, wenn der
+/// Environment-Grant vorliegt; ohne Grant bleibt der WASI-Import unerfüllt und die Instanziierung
+/// schlägt VOR jeder Ausführung fehl (deny-before-instantiation). Bei Erfolg wird `run` ausgeführt
+/// und der von der Component nach stdout geschriebene Text zurückgegeben.
+pub fn run_wasi_guest(grants: &CapabilityGrants) -> Result<String> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    let engine = Engine::new(&config)?;
+    let component = Component::from_binary(&engine, WASI_GUEST_COMPONENT)?;
+
+    let mut linker = Linker::<WasiGuestHost>::new(&engine);
+    if !grants.environment.is_empty() {
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+    }
+
+    let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(64 * 1024);
+    let mut builder = wasmtime_wasi::WasiCtxBuilder::new();
+    builder.stdout(stdout.clone());
+    for key in &grants.environment {
+        builder.env(key, "granted");
+    }
+    let host = WasiGuestHost {
+        ctx: builder.build(),
+        table: wasmtime::component::ResourceTable::new(),
+    };
+    let mut store = Store::new(&engine, host);
+
+    let command =
+        wasmtime_wasi::p2::bindings::sync::Command::instantiate(&mut store, &component, &linker)?;
+    command
+        .wasi_cli_run()
+        .call_run(&mut store)?
+        .map_err(|()| anyhow::anyhow!("guest run returned an error"))?;
+
+    Ok(String::from_utf8_lossy(&stdout.contents()).into_owned())
+}
+
+pub fn discover_wit(path: &Path, world_name: &str) -> Result<CapabilityInventory> {
+    let mut resolve = Resolve::default();
+    let (package, _) = resolve
+        .push_path(path)
+        .with_context(|| format!("failed to parse WIT at {}", path.display()))?;
+    let world_id = resolve
+        .select_world(&[package], Some(world_name))
+        .with_context(|| format!("world '{world_name}' not found"))?;
+    let world = &resolve.worlds[world_id];
+    let imports = world
+        .imports
+        .keys()
+        .map(|key| world_key_name(&resolve, key))
+        .collect::<Vec<_>>();
+    let mut capabilities = Vec::new();
+
+    for (key, item) in &world.exports {
+        match item {
+            WorldItem::Interface { id, .. } => {
+                let interface = &resolve.interfaces[*id];
+                let interface_name = interface
+                    .name
+                    .as_deref()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| world_key_name(&resolve, key));
+                for function in interface.functions.values() {
+                    capabilities.push(map_function(&resolve, &interface_name, function, &imports)?);
+                }
+            }
+            WorldItem::Function(function) => {
+                capabilities.push(map_function(&resolve, "", function, &imports)?);
+            }
+            WorldItem::Type { .. } => {}
+        }
+    }
+
+    capabilities.sort_by(|left, right| left.native_name.cmp(&right.native_name));
+    Ok(CapabilityInventory {
+        world: world.name.clone(),
+        capabilities,
+    })
+}
+
+pub fn run_runtime_probe() -> Result<RuntimeProbeReport> {
+    let engine = hardened_engine(true, true)?;
+    let wit_component_bytes = encode_control_plane_component()?;
+    let wit_component = Component::from_binary(&engine, &wit_component_bytes)?;
+    let wit_imports = component_imports(&engine, &wit_component);
+    ensure_imports_granted(&wit_imports, &CapabilityGrants::default())?;
+    let wit_component_exports = component_exports(&engine, &wit_component);
+    let mut wit_store = Store::new(&engine, ());
+    wit_store.set_fuel(100_000)?;
+    wit_store.set_epoch_deadline(1);
+    Linker::new(&engine).instantiate(&mut wit_store, &wit_component)?;
+
+    let compile_started = Instant::now();
+    let (component_bytes, component) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+    let compile_milliseconds = compile_started.elapsed().as_secs_f64() * 1000.0;
+    let imports = component_imports(&engine, &component);
+    ensure_imports_granted(&imports, &CapabilityGrants::default())?;
+    let exports = component_exports(&engine, &component);
+
+    let invoke_started = Instant::now();
+    let mut store = Store::new(&engine, ());
+    store.set_fuel(10_000)?;
+    store.set_epoch_deadline(1);
+    let instance = Linker::new(&engine).instantiate(&mut store, &component)?;
+    let run = instance.get_typed_func::<(i32,), (i32,)>(&mut store, "run")?;
+    let (smoke_result,) = run.call(&mut store, (41,))?;
+    let instantiate_and_call_milliseconds = invoke_started.elapsed().as_secs_f64() * 1000.0;
+
+    Ok(RuntimeProbeReport {
+        runtime: RUNTIME_VERSION,
+        component_sha256: sha256_hex(&component_bytes),
+        wit_component_sha256: sha256_hex(&wit_component_bytes),
+        imports,
+        exports,
+        wit_component_exports,
+        smoke_result,
+        fuel_limit_enforced: fuel_limit_is_enforced()?,
+        epoch_timeout_enforced: epoch_timeout_is_enforced()?,
+        memory_limit_enforced: memory_limit_is_enforced()?,
+        output_limit_enforced: output_limit_is_enforced(),
+        compile_milliseconds,
+        instantiate_and_call_milliseconds,
+    })
+}
+
+pub fn denied_imports_are_rejected() -> Result<Vec<String>> {
+    let engine = hardened_engine(false, false)?;
+    let (_, component) = compile_component(&engine, DENIED_IMPORT_COMPONENT)?;
+    let imports = component_imports(&engine, &component);
+    match ensure_imports_granted(&imports, &CapabilityGrants::default()) {
+        Ok(()) => bail!("component with host imports was unexpectedly accepted"),
+        Err(_) => Ok(imports),
+    }
+}
+
+pub fn compare_with_container(image: &str, samples: usize) -> Result<IsolationComparisonReport> {
+    if samples < 3 {
+        bail!("at least three samples are required");
+    }
+    let runtime = docker_output(&["version", "--format", "{{.Server.Version}}"])
+        .context("Docker daemon is unavailable")?;
+    let image_id = docker_output(&["image", "inspect", "--format", "{{.Id}}", image])
+        .with_context(|| format!("container image '{image}' is unavailable; pull it explicitly"))?;
+
+    let mut wasi_timings = Vec::with_capacity(samples);
+    let mut container_timings = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = Instant::now();
+        invoke_fresh_component()?;
+        wasi_timings.push(started.elapsed().as_secs_f64() * 1000.0);
+
+        let started = Instant::now();
+        let status = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "16",
+                "--memory",
+                "64m",
+                "--cpus",
+                "0.5",
+                "--user",
+                "65532:65532",
+                image,
+                "/bin/true",
+            ])
+            .status()
+            .context("failed to launch hardened container job")?;
+        if !status.success() {
+            bail!("hardened container job exited with {status}");
+        }
+        container_timings.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    Ok(IsolationComparisonReport {
+        samples,
+        wasi_runtime: "wasmtime-47.0.2",
+        wasi_policy: "zero imports, fuel, epoch deadline, 128-KiB memory ceiling",
+        wasi_cold_start_milliseconds: timing_summary(wasi_timings),
+        container_runtime: runtime,
+        container_image: image.to_owned(),
+        container_image_id: image_id,
+        container_policy: vec![
+            "network=none",
+            "rootfs=read-only",
+            "capabilities=none",
+            "no-new-privileges",
+            "pids=16",
+            "memory=64m",
+            "cpus=0.5",
+            "uid=65532",
+        ],
+        container_job_milliseconds: timing_summary(container_timings),
+        qualification: "startup-floor only; not a security equivalence or application throughput benchmark",
+    })
+}
+
+pub fn capture_bounded<I, B>(chunks: I, max_bytes: usize) -> BoundedCapture
+where
+    I: IntoIterator<Item = B>,
+    B: AsRef<[u8]>,
+{
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut total_bytes = 0usize;
+    for chunk in chunks {
+        let chunk = chunk.as_ref();
+        total_bytes = total_bytes.saturating_add(chunk.len());
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    BoundedCapture {
+        truncated: total_bytes > bytes.len(),
+        bytes,
+        total_bytes,
+    }
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn map_function(
+    resolve: &Resolve,
+    interface_name: &str,
+    function: &Function,
+    imports: &[String],
+) -> Result<CapabilityDescriptorV1> {
+    let input_type = match function.params.as_slice() {
+        [] => "()".to_owned(),
+        [parameter] => type_label(resolve, parameter.ty)?,
+        parameters => format!(
+            "tuple<{}>",
+            parameters
+                .iter()
+                .map(|parameter| type_label(resolve, parameter.ty))
+                .collect::<Result<Vec<_>>>()?
+                .join(",")
+        ),
+    };
+    let result_type = function
+        .result
+        .map(|result| type_label(resolve, result))
+        .transpose()?
+        .unwrap_or_else(|| "()".to_owned());
+    let native_name = if interface_name.is_empty() {
+        function.name.clone()
+    } else {
+        format!("{interface_name}.{}", function.name)
+    };
+    Ok(CapabilityDescriptorV1 {
+        native_name,
+        kind: "Tool".to_owned(),
+        execution: "Synchronous".to_owned(),
+        input_type,
+        result_type,
+        imports: imports.to_vec(),
+    })
+}
+
+fn type_label(resolve: &Resolve, ty: Type) -> Result<String> {
+    Ok(match ty {
+        Type::Bool => "bool".to_owned(),
+        Type::U8 => "u8".to_owned(),
+        Type::U16 => "u16".to_owned(),
+        Type::U32 => "u32".to_owned(),
+        Type::U64 => "u64".to_owned(),
+        Type::S8 => "s8".to_owned(),
+        Type::S16 => "s16".to_owned(),
+        Type::S32 => "s32".to_owned(),
+        Type::S64 => "s64".to_owned(),
+        Type::F32 => "f32".to_owned(),
+        Type::F64 => "f64".to_owned(),
+        Type::Char => "char".to_owned(),
+        Type::String => "string".to_owned(),
+        Type::ErrorContext => bail!("error-context is outside spike scope"),
+        Type::Id(id) => {
+            let definition = &resolve.types[id];
+            if let Some(name) = &definition.name {
+                name.clone()
+            } else {
+                match &definition.kind {
+                    TypeDefKind::Option(inner) => {
+                        format!("option<{}>", type_label(resolve, *inner)?)
+                    }
+                    TypeDefKind::Result(result) => format!(
+                        "result<{},{}>",
+                        optional_type_label(resolve, result.ok)?,
+                        optional_type_label(resolve, result.err)?
+                    ),
+                    TypeDefKind::List(inner) => {
+                        format!("list<{}>", type_label(resolve, *inner)?)
+                    }
+                    TypeDefKind::Tuple(tuple) => format!(
+                        "tuple<{}>",
+                        tuple
+                            .types
+                            .iter()
+                            .map(|item| type_label(resolve, *item))
+                            .collect::<Result<Vec<_>>>()?
+                            .join(",")
+                    ),
+                    TypeDefKind::Type(inner) => type_label(resolve, *inner)?,
+                    TypeDefKind::Record(_)
+                    | TypeDefKind::Variant(_)
+                    | TypeDefKind::Enum(_)
+                    | TypeDefKind::Flags(_) => {
+                        bail!(
+                            "anonymous {} types are unsupported",
+                            definition.kind.as_str()
+                        )
+                    }
+                    TypeDefKind::Resource
+                    | TypeDefKind::Handle(_)
+                    | TypeDefKind::Map(_, _)
+                    | TypeDefKind::FixedLengthList(_, _)
+                    | TypeDefKind::Future(_)
+                    | TypeDefKind::Stream(_)
+                    | TypeDefKind::Unknown => {
+                        bail!("{} is outside spike scope", definition.kind.as_str())
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn optional_type_label(resolve: &Resolve, ty: Option<Type>) -> Result<String> {
+    ty.map(|value| type_label(resolve, value))
+        .transpose()
+        .map(|value| value.unwrap_or_else(|| "_".to_owned()))
+}
+
+fn world_key_name(resolve: &Resolve, key: &WorldKey) -> String {
+    match key {
+        WorldKey::Name(name) => name.clone(),
+        WorldKey::Interface(id) => resolve.interfaces[*id]
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("interface-{}", id.index())),
+    }
+}
+
+fn hardened_engine(consume_fuel: bool, epoch_interruption: bool) -> Result<Engine> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(consume_fuel);
+    config.epoch_interruption(epoch_interruption);
+    Ok(Engine::new(&config)?)
+}
+
+fn encode_control_plane_component() -> Result<Vec<u8>> {
+    let mut resolve = Resolve::default();
+    let package = resolve.push_str("control-plane.wit", CONTROL_PLANE_WIT)?;
+    let world = resolve.select_world(&[package], Some("connector"))?;
+    let mut module = dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+    embed_component_metadata(&mut module, &resolve, world, StringEncoding::UTF8)?;
+    ComponentEncoder::default()
+        .module(&module)?
+        .validate(true)
+        .encode()
+}
+
+fn invoke_fresh_component() -> Result<()> {
+    let engine = hardened_engine(true, true)?;
+    let (_, component) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+    let mut store = Store::new(&engine, ());
+    store.set_fuel(10_000)?;
+    store.set_epoch_deadline(1);
+    let instance = Linker::new(&engine).instantiate(&mut store, &component)?;
+    let run = instance.get_typed_func::<(i32,), (i32,)>(&mut store, "run")?;
+    let (result,) = run.call(&mut store, (41,))?;
+    if result != 42 {
+        bail!("unexpected component result {result}");
+    }
+    Ok(())
+}
+
+fn compile_component(engine: &Engine, source: &str) -> Result<(Vec<u8>, Component)> {
+    let bytes = wat::parse_str(source)?;
+    let component = Component::from_binary(engine, &bytes)?;
+    Ok((bytes, component))
+}
+
+fn docker_output(arguments: &[&str]) -> Result<String> {
+    let output = Command::new("docker")
+        .args(arguments)
+        .output()
+        .context("failed to execute docker")?;
+    if !output.status.success() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+fn timing_summary(mut values: Vec<f64>) -> TimingSummary {
+    values.sort_by(f64::total_cmp);
+    let p95_index = ((values.len() as f64 * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(values.len() - 1);
+    TimingSummary {
+        minimum: values[0],
+        median: values[values.len() / 2],
+        p95: values[p95_index],
+        maximum: values[values.len() - 1],
+    }
+}
+
+fn component_imports(engine: &Engine, component: &Component) -> Vec<String> {
+    component
+        .component_type()
+        .imports(engine)
+        .map(|(name, _)| name.to_owned())
+        .collect()
+}
+
+fn component_exports(engine: &Engine, component: &Component) -> Vec<String> {
+    let mut exports = Vec::new();
+    for (name, item) in component.component_type().exports(engine) {
+        exports.push(name.to_owned());
+        if let ComponentItem::ComponentInstance(instance) = item.ty {
+            exports.extend(
+                instance
+                    .exports(engine)
+                    .map(|(child, _)| format!("{name}.{child}")),
+            );
+        }
+    }
+    exports.sort();
+    exports
+}
+
+fn ensure_imports_granted(imports: &[String], grants: &CapabilityGrants) -> Result<()> {
+    let denied = imports
+        .iter()
+        .filter(|import| !import_is_granted(import, grants))
+        .cloned()
+        .collect::<Vec<_>>();
+    if denied.is_empty() {
+        Ok(())
+    } else {
+        bail!("component imports are not granted: {}", denied.join(", "))
+    }
+}
+
+fn fuel_limit_is_enforced() -> Result<bool> {
+    let engine = hardened_engine(true, false)?;
+    let (_, component) = compile_component(&engine, INFINITE_COMPONENT)?;
+    let mut store = Store::new(&engine, ());
+    store.set_fuel(1_000)?;
+    let instance = Linker::new(&engine).instantiate(&mut store, &component)?;
+    let spin = instance.get_typed_func::<(), ()>(&mut store, "spin")?;
+    Ok(spin.call(&mut store, ()).is_err())
+}
+
+fn epoch_timeout_is_enforced() -> Result<bool> {
+    let engine = hardened_engine(false, true)?;
+    let (_, component) = compile_component(&engine, INFINITE_COMPONENT)?;
+    let mut store = Store::new(&engine, ());
+    store.set_epoch_deadline(1);
+    let instance = Linker::new(&engine).instantiate(&mut store, &component)?;
+    let spin = instance.get_typed_func::<(), ()>(&mut store, "spin")?;
+    let interrupt_engine = engine.clone();
+    let interrupter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        interrupt_engine.increment_epoch();
+    });
+    let started = Instant::now();
+    let trapped = spin.call(&mut store, ()).is_err();
+    interrupter
+        .join()
+        .map_err(|_| anyhow::anyhow!("epoch interrupter panicked"))?;
+    Ok(trapped && started.elapsed() < Duration::from_secs(2))
+}
+
+fn memory_limit_is_enforced() -> Result<bool> {
+    let engine = hardened_engine(false, false)?;
+    let (_, component) = compile_component(&engine, MEMORY_GROWTH_COMPONENT)?;
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(128 * 1024)
+        .memories(1)
+        .instances(4)
+        .trap_on_grow_failure(true)
+        .build();
+    let mut store = Store::new(&engine, limits);
+    store.limiter(|state: &mut StoreLimits| state);
+    let instance = Linker::new(&engine).instantiate(&mut store, &component)?;
+    let grow = instance.get_typed_func::<(u32,), (i32,)>(&mut store, "grow")?;
+    Ok(grow.call(&mut store, (2,)).is_err())
+}
+
+fn output_limit_is_enforced() -> bool {
+    let chunks = std::iter::repeat_n(vec![b'x'; 32 * 1024], 32);
+    let capture = capture_bounded(chunks, 64 * 1024);
+    capture.bytes.len() == 64 * 1024 && capture.total_bytes == 1024 * 1024 && capture.truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    use super::*;
+
+    fn repository_fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/spikes/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn wit_inventory_matches_expected_contract() -> Result<()> {
+        let actual = discover_wit(&repository_fixture("control-plane.wit"), "connector")?;
+        let expected: CapabilityInventory = serde_json::from_slice(&std::fs::read(
+            repository_fixture("control-plane.expected.json"),
+        )?)?;
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_executes_without_host_capabilities_and_enforces_limits() -> Result<()> {
+        let report = run_runtime_probe()?;
+        assert!(report.imports.is_empty());
+        assert_eq!(report.exports, ["run"]);
+        assert!(
+            report
+                .wit_component_exports
+                .iter()
+                .any(|name| name.ends_with(".run"))
+        );
+        assert_eq!(report.smoke_result, 42);
+        assert!(report.fuel_limit_enforced);
+        assert!(report.epoch_timeout_enforced);
+        assert!(report.memory_limit_enforced);
+        assert!(report.output_limit_enforced);
+        Ok(())
+    }
+
+    #[test]
+    fn filesystem_and_network_imports_are_denied_before_instantiation() -> Result<()> {
+        let imports = denied_imports_are_rejected()?;
+        assert!(imports.iter().any(|name| name.contains("filesystem")));
+        assert!(imports.iter().any(|name| name.contains("sockets")));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_capture_counts_bytes_and_drains_all_chunks() {
+        let capture = capture_bounded([&b"\xc3\xa4"[..], &b"1234"[..]], 3);
+        assert_eq!(capture.bytes, b"\xc3\xa4\x31");
+        assert_eq!(capture.total_bytes, 6);
+        assert!(capture.truncated);
+    }
+
+    #[test]
+    fn timing_summary_uses_nearest_rank_p95() {
+        let summary = timing_summary(vec![9.0, 1.0, 4.0, 3.0, 2.0]);
+        assert_eq!(summary.minimum, 1.0);
+        assert_eq!(summary.median, 3.0);
+        assert_eq!(summary.p95, 9.0);
+        assert_eq!(summary.maximum, 9.0);
+    }
+
+    #[test]
+    fn grants_default_deny_every_category() {
+        let grants = CapabilityGrants::default();
+        for import in [
+            "wasi:filesystem/types@0.2.0",
+            "wasi:sockets/tcp@0.2.0",
+            "wasi:cli/environment@0.2.0",
+            "wasi:clocks/wall-clock@0.2.0",
+            "wasi:random/random@0.2.0",
+            "custom:secret/store@1.0.0",
+            "totally:unknown/interface@0.1.0",
+        ] {
+            assert!(
+                ensure_imports_granted(&[import.to_owned()], &grants).is_err(),
+                "default grants must deny {import}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_grant_allows_only_its_own_category() {
+        let mut grants = CapabilityGrants::default();
+        grants.filesystem_preopens.insert("/srv/data".to_owned());
+
+        assert!(
+            ensure_imports_granted(&["wasi:filesystem/types@0.2.0".to_owned()], &grants).is_ok()
+        );
+        assert!(ensure_imports_granted(&["wasi:sockets/tcp@0.2.0".to_owned()], &grants).is_err());
+    }
+
+    #[test]
+    fn unknown_imports_fail_closed_even_with_every_grant() {
+        let grants = CapabilityGrants {
+            filesystem_preopens: BTreeSet::from(["/srv".to_owned()]),
+            network_allow: BTreeSet::from(["example:443".to_owned()]),
+            environment: BTreeSet::from(["TOKEN".to_owned()]),
+            secrets: BTreeSet::from(["db".to_owned()]),
+            clock: true,
+            random: true,
+        };
+        assert_eq!(
+            classify_import("mystery:iface/foo@0.1.0"),
+            GrantCategory::Unknown
+        );
+        assert!(ensure_imports_granted(&["mystery:iface/foo@0.1.0".to_owned()], &grants).is_err());
+    }
+
+    #[test]
+    fn classifies_wasi_p2_interfaces() {
+        assert_eq!(
+            classify_import("wasi:filesystem/types@0.2.0"),
+            GrantCategory::Filesystem
+        );
+        assert_eq!(
+            classify_import("wasi:sockets/network@0.2.0"),
+            GrantCategory::Network
+        );
+        assert_eq!(
+            classify_import("wasi:cli/environment@0.2.0"),
+            GrantCategory::Environment
+        );
+        assert_eq!(
+            classify_import("wasi:clocks/monotonic-clock@0.2.0"),
+            GrantCategory::Clock
+        );
+        assert_eq!(
+            classify_import("wasi:random/random@0.2.0"),
+            GrantCategory::Random
+        );
+    }
+
+    #[test]
+    fn valid_signature_from_pinned_publisher_is_accepted() {
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let pinned = vec![pinned_publisher(signing.verifying_key())];
+        let bytes = b"component-bytes";
+        let signature = signing.sign(bytes);
+
+        let key_id = verify_component_signature(bytes, &signature.to_bytes(), &pinned).unwrap();
+        assert_eq!(key_id, sha256_hex(signing.verifying_key().as_bytes()));
+    }
+
+    #[test]
+    fn tampered_bytes_break_verification() {
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let pinned = vec![pinned_publisher(signing.verifying_key())];
+        let signature = signing.sign(b"original-bytes");
+
+        assert!(
+            verify_component_signature(b"tampered-bytes", &signature.to_bytes(), &pinned).is_err()
+        );
+    }
+
+    #[test]
+    fn signature_from_unpinned_key_is_rejected() {
+        let trusted = SigningKey::from_bytes(&[1u8; 32]);
+        let rogue = SigningKey::from_bytes(&[2u8; 32]);
+        let pinned = vec![pinned_publisher(trusted.verifying_key())];
+        let bytes = b"component-bytes";
+        let signature = rogue.sign(bytes);
+
+        assert!(verify_component_signature(bytes, &signature.to_bytes(), &pinned).is_err());
+    }
+
+    #[test]
+    fn real_component_bytes_can_be_signed_and_verified() -> Result<()> {
+        let engine = hardened_engine(false, false)?;
+        let (bytes, _) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+        let signing = SigningKey::from_bytes(&[42u8; 32]);
+        let pinned = vec![pinned_publisher(signing.verifying_key())];
+        let signature = signing.sign(&bytes);
+
+        assert!(verify_component_signature(&bytes, &signature.to_bytes(), &pinned).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn grant_audit_record_captures_hash_publisher_runtime_and_grants() {
+        let grants = CapabilityGrants {
+            filesystem_preopens: BTreeSet::from(["/srv/data".to_owned()]),
+            network_allow: BTreeSet::from(["example:443".to_owned()]),
+            environment: BTreeSet::from(["TOKEN".to_owned()]),
+            secrets: BTreeSet::from(["db".to_owned()]),
+            clock: true,
+            random: false,
+        };
+
+        let record = grant_audit_record(b"component-bytes", "publisher-id", &grants);
+
+        assert_eq!(record.module_sha256, sha256_hex(b"component-bytes"));
+        assert_eq!(record.publisher_key_id, "publisher-id");
+        assert_eq!(record.runtime, "wasmtime-47.0.2");
+        assert_eq!(record.granted_filesystem_preopens, ["/srv/data"]);
+        assert_eq!(record.granted_network_allow, ["example:443"]);
+        assert_eq!(record.granted_secrets, ["db"]);
+        assert!(record.granted_clock);
+        assert!(!record.granted_random);
+
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"moduleSha256\""));
+        assert!(json.contains("\"grantedFilesystemPreopens\""));
+    }
+
+    #[test]
+    fn lexical_root_containment_blocks_traversal_and_absolute_paths() {
+        let root = Path::new("/srv/data");
+        assert_eq!(
+            resolve_within_root(root, "a/b").unwrap(),
+            Path::new("/srv/data/a/b")
+        );
+        assert_eq!(
+            resolve_within_root(root, "a/./c").unwrap(),
+            Path::new("/srv/data/a/c")
+        );
+        assert_eq!(
+            resolve_within_root(root, "a/../b").unwrap(),
+            Path::new("/srv/data/b")
+        );
+        assert!(resolve_within_root(root, "../etc/passwd").is_err());
+        assert!(resolve_within_root(root, "a/../../x").is_err());
+        assert!(resolve_within_root(root, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn ungranted_sockets_are_denied() {
+        let denied = CapabilityGrants::default();
+        assert!(ensure_imports_granted(&["wasi:sockets/tcp@0.2.0".to_owned()], &denied).is_err());
+
+        let mut granted = CapabilityGrants::default();
+        granted.network_allow.insert("example:443".to_owned());
+        assert!(ensure_imports_granted(&["wasi:sockets/tcp@0.2.0".to_owned()], &granted).is_ok());
+    }
+
+    #[test]
+    fn ungranted_secrets_are_denied() {
+        assert_eq!(
+            classify_import("custom:secret/store@1.0.0"),
+            GrantCategory::Secret
+        );
+        let denied = CapabilityGrants::default();
+        assert!(
+            ensure_imports_granted(&["custom:secret/store@1.0.0".to_owned()], &denied).is_err()
+        );
+
+        let mut granted = CapabilityGrants::default();
+        granted.secrets.insert("db".to_owned());
+        assert!(
+            ensure_imports_granted(&["custom:secret/store@1.0.0".to_owned()], &granted).is_ok()
+        );
+    }
+
+    #[test]
+    fn canonical_containment_rejects_symlink_escape() -> Result<()> {
+        let base = std::env::temp_dir().join(format!("mcpmcp-spike-{}", std::process::id()));
+        let inside = base.join("inside");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&inside)?;
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("secret.txt"), b"top-secret")?;
+
+        let link = inside.join("escape");
+        if create_dir_symlink(&outside, &link).is_err() {
+            // Symlink-Erstellung nicht erlaubt (z. B. Windows ohne Rechte) -> Test überspringen.
+            let _ = std::fs::remove_dir_all(&base);
+            return Ok(());
+        }
+
+        // Zugriff „innerhalb" des Preopens, real aber hinter dem Symlink -> muss abgewiesen werden.
+        let escaped = canonical_within_root(&inside, &link.join("secret.txt"));
+        // Eine echt innerhalb liegende Datei bleibt erlaubt.
+        std::fs::write(inside.join("ok.txt"), b"fine")?;
+        let allowed = canonical_within_root(&inside, &inside.join("ok.txt"));
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(escaped.is_err(), "symlink escape must be rejected");
+        assert!(allowed.is_ok(), "a real in-root file must be allowed");
+        Ok(())
+    }
+
+    #[test]
+    fn wasi_guest_runs_only_when_capabilities_are_granted() -> Result<()> {
+        // Ohne Grant wird WASI nicht gelinkt -> Instanziierung schlägt VOR der Ausführung fehl.
+        assert!(run_wasi_guest(&CapabilityGrants::default()).is_err());
+
+        // Mit Environment-Grant ist WASI gelinkt -> die echte Guest-Component läuft und schreibt
+        // ihre Kennung nach stdout.
+        let mut grants = CapabilityGrants::default();
+        grants.environment.insert("MCPMCP_SPIKE".to_owned());
+        let output = run_wasi_guest(&grants)?;
+        assert!(
+            output.contains("mcpmcp-guest-ok"),
+            "unexpected guest output: {output}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_dir_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+}

@@ -50,6 +50,7 @@ internal static class ApiEndpoints
                 InvocationStatus.Success => Results.Ok(new { status = "Success", content = result.Content }),
                 InvocationStatus.ValidationFailed => Error(StatusCodes.Status400BadRequest, result),
                 InvocationStatus.Denied => Error(StatusCodes.Status403Forbidden, result),
+                InvocationStatus.ApprovalRequired => Error(StatusCodes.Status409Conflict, result),
                 InvocationStatus.ToolNotFound => Error(StatusCodes.Status404NotFound, result),
                 InvocationStatus.Timeout => Error(StatusCodes.Status504GatewayTimeout, result),
                 _ => Error(StatusCodes.Status502BadGateway, result),
@@ -125,11 +126,22 @@ internal static class ApiEndpoints
         });
 
         servers.MapPut("/{id:guid}", async (
-            Guid id, UpstreamServerConfig config, UpstreamSupervisor supervisor, CancellationToken ct) =>
+            Guid id, UpstreamServerConfig config, UpstreamSupervisor supervisor,
+            IUpstreamConfigStore store, CancellationToken ct) =>
         {
             try
             {
-                var version = await supervisor.ReconfigureAsync(new ServerId(id), config, ct);
+                var serverId = new ServerId(id);
+                var previous = (await store.GetHistoryAsync(serverId, ct))
+                    .OrderByDescending(item => item.Version.Value)
+                    .FirstOrDefault()?.Config;
+                if (previous is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var merged = UpstreamConfigMerge.CarryOverSecrets(config, previous);
+                var version = await supervisor.ReconfigureAsync(serverId, merged, ct);
                 return Results.Ok(new { version = version.Value });
             }
             catch (KeyNotFoundException)
@@ -166,7 +178,7 @@ internal static class ApiEndpoints
                 {
                     version = v.Version.Value,
                     savedAt = v.SavedAt,
-                    config = RedactConfig(v.Config),
+                    config = UpstreamConfigRedactor.Redact(v.Config),
                 }),
             });
         });
@@ -373,20 +385,6 @@ internal static class ApiEndpoints
 
     private static IResult Error(int statusCode, ToolInvocationResult result)
         => Results.Json(new { status = result.Status.ToString(), error = result.ErrorMessage }, statusCode: statusCode);
-
-    /// <summary>DON'T Nr. 2: Secrets tauchen auch in Admin-Antworten nicht auf.</summary>
-    private static UpstreamServerConfig RedactConfig(UpstreamServerConfig config) => config with
-    {
-        Stdio = config.Stdio is { EnvironmentVariables: { Count: > 0 } env } stdio
-            ? stdio with { EnvironmentVariables = env.ToDictionary(kv => kv.Key, _ => "***") }
-            : config.Stdio,
-        Http = config.Http is { Headers: { Count: > 0 } headers } http
-            ? http with { Headers = headers.ToDictionary(kv => kv.Key, _ => "***") }
-            : config.Http,
-        OpenApi = config.OpenApi is { Credential: not null } openApi
-            ? openApi with { Credential = "***" }
-            : config.OpenApi,
-    };
 
     private static void AuditManagement(
         IAuditSink audit, TimeProvider time, HttpContext ctx, AuditEventKind kind, ServerId? server, string subject)

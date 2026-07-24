@@ -7,6 +7,10 @@ namespace McpMcp.Core.Tests.Upstreams;
 
 public class UpstreamConfigValidatorTests
 {
+    private static UpstreamServerConfig Cli(params CliToolSpec[] tools) => new(
+        "cli", "CLI", UpstreamTransportKind.Cli, Enabled: true,
+        Cli: new CliTransportOptions(Environment.ProcessPath!, tools));
+
     [Fact]
     public void Valid_stdio_config_passes()
     {
@@ -104,5 +108,84 @@ public class UpstreamConfigValidatorTests
         var act = () => UpstreamConfigValidator.Validate(config);
 
         act.Should().Throw<ArgumentException>().WithMessage("*Http*");
+    }
+
+    [Fact]
+    public void Duplicate_cli_tool_names_are_rejected()
+    {
+        var config = Cli(new CliToolSpec("run"), new CliToolSpec("run"));
+
+        var act = () => UpstreamConfigValidator.Validate(config);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*doppelt*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("has space")]
+    [InlineData("-starts-with-dash")]
+    [InlineData("umlaut-ä")]
+    public void Invalid_cli_tool_names_are_rejected(string name)
+    {
+        var act = () => UpstreamConfigValidator.Validate(Cli(new CliToolSpec(name)));
+
+        act.Should().Throw<ArgumentException>().WithMessage("*Toolname*");
+    }
+
+    [Fact]
+    public void Relative_cli_executable_is_rejected_unless_path_lookup_is_explicit()
+    {
+        var strict = Cli(new CliToolSpec("run")) with
+        {
+            Cli = new CliTransportOptions("dotnet", [new CliToolSpec("run")]),
+        };
+        var development = strict with
+        {
+            Cli = strict.Cli! with { AllowPathLookup = true },
+        };
+
+        Action strictAct = () => UpstreamConfigValidator.Validate(strict);
+        Action developmentAct = () => UpstreamConfigValidator.Validate(development);
+
+        strictAct
+            .Should().Throw<ArgumentException>().WithMessage("*absolut*");
+        developmentAct.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData(0, 1024)]
+    [InlineData(1, 0)]
+    public void Nonpositive_cli_limits_are_rejected(int concurrency, int outputBytes)
+    {
+        var config = Cli(new CliToolSpec("run")) with
+        {
+            Cli = Cli(new CliToolSpec("run")).Cli! with
+            {
+                MaxConcurrency = concurrency,
+                MaxOutputBytes = outputBytes,
+            },
+        };
+
+        Action act = () => UpstreamConfigValidator.Validate(config);
+
+        act
+            .Should().Throw<ArgumentException>().WithMessage("*Cli*");
+    }
+
+    [Fact]
+    public void Contradictory_cli_parameters_are_rejected()
+    {
+        var config = Cli(new CliToolSpec(
+            "run",
+            Parameters:
+            [
+                new CliParameterSpec("target", Position: 0, Flag: "--target"),
+                new CliParameterSpec("target"),
+            ]));
+
+        Action act = () => UpstreamConfigValidator.Validate(config);
+
+        act
+            .Should().Throw<ArgumentException>();
     }
 }

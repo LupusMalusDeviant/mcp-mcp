@@ -1,5 +1,7 @@
 @page "/servers"
 @attribute [Authorize(Policy = UiPolicies.Operator)]
+@using System.Text.Json
+@using System.Text.Json.Serialization
 @inject IUpstreamSupervisor Supervisor
 @inject IUpstreamConfigStore ConfigStore
 @inject IUpstreamConnectionTester Tester
@@ -8,7 +10,7 @@
 @inject AuthenticationStateProvider AuthState
 
 <h1>Server-Verwaltung</h1>
-<p class="muted">Upstream-MCP-Server und OpenAPI-Quellen zur Laufzeit hinzufügen, ohne Neustart (FR-06/34).</p>
+<p class="muted">MCP-, OpenAPI- und gehärtete CLI-Quellen zur Laufzeit hinzufügen, ohne Neustart (FR-06/34).</p>
 
 <div class="card">
     <h3 style="margin-top:0">Angeschlossene Server</h3>
@@ -126,6 +128,7 @@
                 <option value="@UpstreamTransportKind.Stdio">stdio (lokaler Prozess)</option>
                 <option value="@UpstreamTransportKind.StreamableHttp">Streamable HTTP</option>
                 <option value="@UpstreamTransportKind.OpenApi">OpenAPI-Import</option>
+                <option value="@UpstreamTransportKind.Cli">CLI-Manifest (lokaler Prozess)</option>
             </select>
         </div>
         <div>
@@ -146,6 +149,49 @@
         </div>
         <label>Environment (KEY=VALUE pro Zeile)</label>
         <textarea class="mono" rows="3" @bind="_env" placeholder="GITHUB_TOKEN=ghp_..."></textarea>
+    }
+    else if (_kind == UpstreamTransportKind.Cli)
+    {
+        <div class="row">
+            <div style="flex:2"><label>Executable (absolut)</label><input @bind="_cliExecutable" placeholder="/usr/bin/git" /></div>
+            <div style="flex:2"><label>Working Directory (optional, absolut)</label><input @bind="_cliWorkingDirectory" /></div>
+        </div>
+        <div class="row">
+            <div><label>Timeout (Sekunden)</label><input type="number" min="1" max="3600" @bind="_cliTimeoutSeconds" /></div>
+            <div><label>Output-Cap pro Stream (Bytes)</label><input type="number" min="1" @bind="_cliMaxOutputBytes" /></div>
+            <div><label>Max. Parallelität</label><input type="number" min="1" max="64" @bind="_cliMaxConcurrency" /></div>
+        </div>
+        <label title="Nur für lokale Entwicklung; Produktion verlangt absolute Executables.">
+            <input type="checkbox" @bind="_cliAllowPathLookup" style="width:auto" />
+            Unsichere PATH-Auflösung erlauben (Development)
+        </label>
+        <label>Tools (JSON-Array aus CliToolSpec)</label>
+        <textarea class="mono" rows="12" @bind="_cliToolsJson"
+                  placeholder='[{"name":"status","fixedArguments":["status"],"risk":"Read"}]'></textarea>
+        <div class="row">
+            <div>
+                <label>Executable-Wurzeln (eine pro Zeile)</label>
+                <textarea class="mono" rows="3" @bind="_cliExecutableRoots"></textarea>
+            </div>
+            <div>
+                <label>Working-Directory-Wurzeln (eine pro Zeile)</label>
+                <textarea class="mono" rows="3" @bind="_cliWorkingRoots"></textarea>
+            </div>
+            <div>
+                <label>Lese-Wurzeln für Path-Parameter (eine pro Zeile)</label>
+                <textarea class="mono" rows="3" @bind="_cliReadRoots"></textarea>
+            </div>
+            <div>
+                <label>Schreib-Wurzeln für Path-Parameter (eine pro Zeile)</label>
+                <textarea class="mono" rows="3" @bind="_cliWriteRoots"></textarea>
+            </div>
+        </div>
+        <label>Environment (KEY=VALUE pro Zeile; bestehende Werte bleiben verborgen)</label>
+        <textarea class="mono" rows="3" @bind="_cliEnvironment"></textarea>
+        <label>
+            <input type="checkbox" @bind="_clearCliEnvironment" style="width:auto" />
+            Alle bestehenden CLI-Environment-Secrets explizit löschen
+        </label>
     }
     else if (_kind == UpstreamTransportKind.StreamableHttp)
     {
@@ -205,11 +251,17 @@
     private UpstreamTransportKind _kind = UpstreamTransportKind.Stdio;
     private string _slug = "", _displayName = "", _command = "", _args = "", _env = "";
     private string _httpUrl = "", _headers = "";
+    private string _cliExecutable = "", _cliWorkingDirectory = "", _cliToolsJson = "[]";
+    private string _cliExecutableRoots = "", _cliWorkingRoots = "", _cliReadRoots = "", _cliWriteRoots = "";
+    private string _cliEnvironment = "";
+    private int _cliTimeoutSeconds = 30, _cliMaxOutputBytes = 64 * 1024, _cliMaxConcurrency = 4;
+    private bool _cliAllowPathLookup, _clearCliEnvironment;
     private bool _allowLegacySse = true;
     private string _specUrl = "", _baseUrl = "", _credential = "", _apiKeyHeader = "X-Api-Key";
     private OpenApiAuthKind _openApiAuth = OpenApiAuthKind.None;
     private bool _busy, _ok;
     private string? _message;
+    private static readonly JsonSerializerOptions CliManifestJson = CreateCliManifestJson();
 
     private ServerId? _editServer;
     private string _editSlug = "";
@@ -245,6 +297,27 @@
                     _slug.Trim(), Display(), _kind, true,
                     Http: new HttpTransportOptions(
                         new Uri(_httpUrl.Trim()), ParseKeyValues(_headers), _allowLegacySse)),
+                UpstreamTransportKind.Cli => new UpstreamServerConfig(
+                    _slug.Trim(), Display(), _kind, true,
+                    Cli: new CliTransportOptions(
+                        _cliExecutable.Trim(),
+                        JsonSerializer.Deserialize<List<CliToolSpec>>(
+                            _cliToolsJson, CliManifestJson)
+                            ?? throw new JsonException("CLI-Tools fehlen."),
+                        string.IsNullOrWhiteSpace(_cliWorkingDirectory)
+                            ? null
+                            : _cliWorkingDirectory.Trim(),
+                        _clearCliEnvironment
+                            ? new Dictionary<string, string>()
+                            : ParseKeyValues(_cliEnvironment),
+                        _cliTimeoutSeconds,
+                        _cliMaxOutputBytes,
+                        _cliAllowPathLookup,
+                        ParseLines(_cliExecutableRoots),
+                        ParseLines(_cliWorkingRoots),
+                        ParseLines(_cliReadRoots),
+                        ParseLines(_cliWriteRoots),
+                        _cliMaxConcurrency)),
                 _ => new UpstreamServerConfig(
                     _slug.Trim(), Display(), _kind, true,
                     OpenApi: new OpenApiTransportOptions(
@@ -278,6 +351,13 @@
         return dict.Count > 0 ? dict : null;
     }
 
+    private static IReadOnlyList<string>? ParseLines(string text)
+    {
+        var values = text.Split(
+            '\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return values.Length > 0 ? values : null;
+    }
+
     private async Task Test()
     {
         _busy = true; _message = null;
@@ -303,7 +383,7 @@
             var id = await Supervisor.AddAsync(config, CancellationToken.None);
             UiAudit.Record(Audit, Time, await UserAsync(), AuditEventKind.ConfigChanged, $"server-added:{config.Slug}", id);
             _ok = true; _message = $"'{config.Slug}' angeschlossen.";
-            _slug = _displayName = _command = _args = _env = _httpUrl = _headers = _specUrl = _baseUrl = _credential = "";
+            ClearForm();
             Reload();
         }
         catch (Exception ex)
@@ -329,11 +409,26 @@
         _slug = current.Slug;
         _displayName = current.DisplayName;
 
-        // Secrets (Env, Header, Credential) werden bewusst NICHT vorbefüllt — sie stünden sonst
+        // Secrets (stdio-/CLI-Env, Header, Credential) werden bewusst NICHT vorbefüllt — sie stünden sonst
         // im Klartext im DOM. Leer gelassen übernimmt SaveEdit die bestehenden Werte.
         _command = current.Stdio?.Command ?? "";
         _args = current.Stdio?.Arguments is { } a ? string.Join(' ', a) : "";
         _env = "";
+        _cliExecutable = current.Cli?.Executable ?? "";
+        _cliWorkingDirectory = current.Cli?.WorkingDirectory ?? "";
+        _cliToolsJson = current.Cli?.Tools is { } tools
+            ? JsonSerializer.Serialize(tools, CliManifestJson)
+            : "[]";
+        _cliExecutableRoots = JoinLines(current.Cli?.AllowedExecutableRoots);
+        _cliWorkingRoots = JoinLines(current.Cli?.AllowedWorkingDirectoryRoots);
+        _cliReadRoots = JoinLines(current.Cli?.AllowedReadRoots);
+        _cliWriteRoots = JoinLines(current.Cli?.AllowedWriteRoots);
+        _cliEnvironment = "";
+        _cliTimeoutSeconds = current.Cli?.TimeoutSeconds ?? 30;
+        _cliMaxOutputBytes = current.Cli?.MaxOutputBytes ?? 64 * 1024;
+        _cliMaxConcurrency = current.Cli?.MaxConcurrency ?? 4;
+        _cliAllowPathLookup = current.Cli?.AllowPathLookup ?? false;
+        _clearCliEnvironment = false;
         _httpUrl = current.Http?.Endpoint.ToString() ?? "";
         _headers = "";
         _allowLegacySse = current.Http?.AllowLegacySse ?? true;
@@ -379,7 +474,26 @@
     }
 
     private void ClearForm()
-        => _slug = _displayName = _command = _args = _env = _httpUrl = _headers = _specUrl = _baseUrl = _credential = "";
+    {
+        _slug = _displayName = _command = _args = _env = _httpUrl = _headers = _specUrl =
+            _baseUrl = _credential = _cliExecutable = _cliWorkingDirectory = _cliEnvironment =
+            _cliExecutableRoots = _cliWorkingRoots = _cliReadRoots = _cliWriteRoots = "";
+        _cliToolsJson = "[]";
+        _clearCliEnvironment = false;
+    }
+
+    private static string JoinLines(IReadOnlyList<string>? values)
+        => values is { Count: > 0 } ? string.Join('\n', values) : "";
+
+    private static JsonSerializerOptions CreateCliManifestJson()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
+    }
 
     private async Task SetEnabled(ServerId id, bool enabled)
     {

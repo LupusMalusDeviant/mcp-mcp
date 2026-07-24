@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.RegularExpressions;
+
 using McpMcp.Abstractions;
 
 namespace McpMcp.Core.Upstreams;
@@ -8,6 +10,12 @@ public static partial class UpstreamConfigValidator
 {
     [GeneratedRegex("^[a-z0-9][a-z0-9_-]{0,63}$")]
     private static partial Regex SlugPattern();
+
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]
+    private static partial Regex CliNamePattern();
+
+    [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
+    private static partial Regex EnvironmentNamePattern();
 
     public static void Validate(UpstreamServerConfig config)
     {
@@ -101,26 +109,216 @@ public static partial class UpstreamConfigValidator
 
         if (config.Kind == UpstreamTransportKind.Cli)
         {
-            var cli = config.Cli!;
-            if (string.IsNullOrWhiteSpace(cli.Executable))
+            ValidateCli(config.Cli!, config);
+        }
+    }
+
+    private static void ValidateCli(CliTransportOptions cli, UpstreamServerConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(cli.Executable))
+        {
+            throw new ArgumentException("Cli.Executable darf nicht leer sein.", nameof(config));
+        }
+
+        if (!cli.AllowPathLookup && !Path.IsPathFullyQualified(cli.Executable))
+        {
+            throw new ArgumentException(
+                "Cli.Executable muss im sicheren Modus ein absoluter Pfad sein. "
+                + "PATH-Auflösung ist nur mit AllowPathLookup=true zulässig.",
+                nameof(config));
+        }
+
+        ValidateAbsoluteRoots(cli.AllowedExecutableRoots, "Cli.AllowedExecutableRoots", config);
+        ValidateAbsoluteRoots(cli.AllowedWorkingDirectoryRoots, "Cli.AllowedWorkingDirectoryRoots", config);
+        ValidateAbsoluteRoots(cli.AllowedReadRoots, "Cli.AllowedReadRoots", config);
+        ValidateAbsoluteRoots(cli.AllowedWriteRoots, "Cli.AllowedWriteRoots", config);
+
+        if (cli.WorkingDirectory is not null && !Path.IsPathFullyQualified(cli.WorkingDirectory))
+        {
+            throw new ArgumentException("Cli.WorkingDirectory muss absolut sein.", nameof(config));
+        }
+
+        if (cli.Tools is null || cli.Tools.Count == 0)
+        {
+            throw new ArgumentException("Cli verlangt mindestens ein Tool (CliToolSpec).", nameof(config));
+        }
+
+        var duplicateTool = cli.Tools
+            .GroupBy(tool => tool.Name, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicateTool is not null)
+        {
+            throw new ArgumentException(
+                $"Cli-Toolname '{duplicateTool.Key}' ist doppelt.", nameof(config));
+        }
+
+        foreach (var tool in cli.Tools)
+        {
+            ValidateCliTool(tool, cli.MaxConcurrency, config);
+        }
+
+        if (cli.TimeoutSeconds is { } timeoutSeconds and (<= 0 or > 3600))
+        {
+            throw new ArgumentException(
+                "Cli.TimeoutSeconds muss zwischen 1 und 3600 liegen.", nameof(config));
+        }
+
+        if (cli.MaxOutputBytes is <= 0 or > 16 * 1024 * 1024)
+        {
+            throw new ArgumentException(
+                "Cli.MaxOutputBytes muss zwischen 1 und 16777216 liegen.", nameof(config));
+        }
+
+        if (cli.MaxConcurrency is <= 0 or > 64)
+        {
+            throw new ArgumentException(
+                "Cli.MaxConcurrency muss zwischen 1 und 64 liegen.", nameof(config));
+        }
+
+        try
+        {
+            _ = Encoding.GetEncoding(cli.OutputEncoding);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ArgumentException(
+                $"Cli.OutputEncoding '{cli.OutputEncoding}' ist unbekannt.", nameof(config), ex);
+        }
+
+        if (cli.ExecutableSha256 is { } hash
+            && (hash.Length != 64 || hash.Any(character => !Uri.IsHexDigit(character))))
+        {
+            throw new ArgumentException(
+                "Cli.ExecutableSha256 muss ein 64-stelliger SHA-256-Hexwert sein.", nameof(config));
+        }
+
+        foreach (var name in cli.EnvironmentVariables?.Keys ?? [])
+        {
+            if (!EnvironmentNamePattern().IsMatch(name))
             {
-                throw new ArgumentException("Cli.Executable darf nicht leer sein.", nameof(config));
+                throw new ArgumentException(
+                    $"CLI-Environment-Name '{name}' ist plattformübergreifend ungültig.", nameof(config));
+            }
+        }
+    }
+
+    private static void ValidateCliTool(
+        CliToolSpec tool, int upstreamMaxConcurrency, UpstreamServerConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(tool.Name) || !CliNamePattern().IsMatch(tool.Name))
+        {
+            throw new ArgumentException(
+                $"Cli-Toolname '{tool.Name}' ist ungültig.", nameof(config));
+        }
+
+        if (tool.AllowCallerArguments && tool.Parameters is { Count: > 0 })
+        {
+            throw new ArgumentException(
+                $"Cli-Tool '{tool.Name}' darf freie Argumente und typisierte Parameter nicht mischen.",
+                nameof(config));
+        }
+
+        if (tool.MaxConcurrency is { } commandConcurrency
+            && (commandConcurrency <= 0 || commandConcurrency > upstreamMaxConcurrency))
+        {
+            throw new ArgumentException(
+                $"Cli-Tool '{tool.Name}' hat ein ungültiges MaxConcurrency.", nameof(config));
+        }
+
+        var parameters = tool.Parameters ?? [];
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var positions = new HashSet<int>();
+        foreach (var parameter in parameters)
+        {
+            if (!CliNamePattern().IsMatch(parameter.Name) || !names.Add(parameter.Name))
+            {
+                throw new ArgumentException(
+                    $"Cli-Parametername '{parameter.Name}' ist ungültig oder doppelt.", nameof(config));
             }
 
-            if (cli.Tools is null || cli.Tools.Count == 0)
+            if ((parameter.Position is null) == (parameter.Flag is null))
             {
-                throw new ArgumentException("Cli verlangt mindestens ein Tool (CliToolSpec).", nameof(config));
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' braucht entweder Position oder Flag.", nameof(config));
             }
 
-            if (cli.Tools.Any(t => string.IsNullOrWhiteSpace(t.Name)))
+            if (parameter.Position is { } position && (position < 0 || !positions.Add(position)))
             {
-                throw new ArgumentException("Jeder CliToolSpec braucht einen nicht-leeren Namen.", nameof(config));
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' hat eine ungültige oder doppelte Position.",
+                    nameof(config));
             }
 
-            if (cli.TimeoutSeconds is { } ts && ts <= 0)
+            if (parameter.Flag is { } flag && (flag.Length == 0 || flag[0] != '-' || flag.Length > 64))
             {
-                throw new ArgumentException("Cli.TimeoutSeconds muss positiv sein.", nameof(config));
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' hat ein ungültiges Flag.", nameof(config));
             }
+
+            if (parameter.Type == CliParameterType.Enum
+                && parameter.AllowedValues is not { Count: > 0 })
+            {
+                throw new ArgumentException(
+                    $"Enum-Parameter '{parameter.Name}' braucht erlaubte Werte.", nameof(config));
+            }
+
+            if (parameter.Type == CliParameterType.Path && parameter.PathAccess == CliPathAccess.None
+                || parameter.Type != CliParameterType.Path && parameter.PathAccess != CliPathAccess.None)
+            {
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' hat widersprüchliche Pfadregeln.", nameof(config));
+            }
+
+            if (parameter.MaxLength is <= 0)
+            {
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' hat eine ungültige Maximallänge.", nameof(config));
+            }
+
+            if (parameter.Minimum is { } min && parameter.Maximum is { } max && min > max)
+            {
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' hat einen widersprüchlichen Wertebereich.",
+                    nameof(config));
+            }
+
+            if (parameter.Pattern is { } pattern)
+            {
+                try
+                {
+                    _ = Regex.IsMatch(string.Empty, pattern);
+                }
+                catch (ArgumentException ex)
+                {
+                    throw new ArgumentException(
+                        $"Cli-Parameter '{parameter.Name}' hat ein ungültiges Pattern.",
+                        nameof(config),
+                        ex);
+                }
+            }
+        }
+
+        foreach (var parameter in parameters)
+        {
+            var conflicts = parameter.ConflictsWith ?? [];
+            var requirements = parameter.Requires ?? [];
+            if (conflicts.Concat(requirements).Any(reference =>
+                    reference == parameter.Name || !names.Contains(reference))
+                || conflicts.Intersect(requirements, StringComparer.Ordinal).Any())
+            {
+                throw new ArgumentException(
+                    $"Cli-Parameter '{parameter.Name}' hat widersprüchliche Abhängigkeiten.",
+                    nameof(config));
+            }
+        }
+    }
+
+    private static void ValidateAbsoluteRoots(
+        IReadOnlyList<string>? roots, string propertyName, UpstreamServerConfig config)
+    {
+        if (roots?.Any(root => string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root)) == true)
+        {
+            throw new ArgumentException($"{propertyName} darf nur absolute Pfade enthalten.", nameof(config));
         }
     }
 }

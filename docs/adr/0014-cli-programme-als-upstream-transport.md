@@ -1,11 +1,16 @@
 # ADR-0014: CLI-Programme als vierter Upstream-Transport
 
-- **Status:** Akzeptiert
+- **Status:** Akzeptiert als Transport; Sicherheitsmodell durch ADR-0017/0018 eingeschränkt
 - **Datum:** 2026-07-24
 - **Autor:** Senior-Tech-Specialist (Claude)
 - **Konsultiert:** Product Owner
 
 ## Kontext und Problemstellung
+
+> **Security-Update 2026-07-24:** Ein festes Binary und shell-freie Argumente bilden keine
+> Sandbox. Der gehärtete Hostmodus verlangt absolute/kanonische Pfade, isoliertes Environment,
+> typisierte Manifeste und Limits; für nicht vertrauenswürdige Programme sind WASI oder Container
+> gemäß ADR-0017/0018 erforderlich.
 
 Das Gateway bündelt heute drei Werkzeug-Quellen uniform hinter einem aggregierten Katalog und der einen Invoker-Pipeline: MCP-Server über stdio und Streamable HTTP (ADR-0005) sowie REST-APIs über OpenAPI-Import (ADR-0008). Was fehlt, ist die größte real existierende Werkzeug-Klasse: beliebige **Kommandozeilen-Programme** (`git`, `ffmpeg`, `kubectl`, eigene Skripte), die weder MCP sprechen noch eine OpenAPI-Spec mitbringen. Der Anspruch ist, *jede* Werkzeug-Art anschließen zu können, sodass ein Agent sie über dieselben Meta-Tools (`search_tools`/`describe_tool`/`invoke_tool`) findet und aufruft — ohne dass zwischen MCP, API und CLI ein Unterschied spürbar ist und ohne das Werkzeug selbst umzubauen.
 
@@ -85,7 +90,8 @@ Ausschlaggebend war die einheitlich erzwingbare Sicherheit plus der minimale Ein
 
 ### Positiv
 
-- „Jede Werkzeug-Art" ist erreicht — für den Aufrufer verschwindet der Unterschied MCP/API/CLI.
+- Eine zusätzliche große Werkzeugklasse ist erreichbar; eine pauschale sichere Unterstützung jeder
+  Werkzeug-Art ist damit ausdrücklich nicht behauptet.
 - Der große Bestand an CLI-Tooling wird nutzbar, ohne die Programme anzufassen.
 - Die gesamte Governance (RBAC/Guardrail/Approval/Audit) wird ohne Zusatzcode wiederverwendet.
 - Rein additiv: kein Eingriff in Katalog, Invoker oder Persistenz.

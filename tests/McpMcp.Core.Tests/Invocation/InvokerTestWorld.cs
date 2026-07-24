@@ -74,12 +74,19 @@ internal sealed class InvokerTestWorld
     /// </summary>
     public string Slug { get; } = $"srv{Guid.NewGuid():N}"[..12];
 
-    public InvokerTestWorld()
+    public InvokerTestWorld(
+        bool echoRequiresApproval = false,
+        bool echoSensitive = false)
     {
         Authorization = new AuthorizationService(Directory);
         Server = Supervisor.SetServer(Slug, new UpstreamInventory(
             [
-                new ToolDescriptor("echo", "Echoes a message back.", StrictSchema()),
+                new ToolDescriptor(
+                    "echo",
+                    "Echoes a message back.",
+                    StrictSchema(echoSensitive),
+                    echoRequiresApproval ? CapabilityRisk.Destructive : CapabilityRisk.Read,
+                    echoRequiresApproval),
                 new ToolDescriptor("free", "Tool ohne verwertbares Schema.", BrokenSchema()),
             ],
             [], []));
@@ -130,10 +137,12 @@ internal sealed class InvokerTestWorld
             args is null ? default : JsonSerializer.SerializeToElement(args),
             timeoutOverride);
 
-    private static JsonElement StrictSchema()
+    private static JsonElement StrictSchema(bool sensitive)
     {
-        using var doc = JsonDocument.Parse(
-            """{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}""");
+        var schema = sensitive
+            ? """{"type":"object","properties":{"message":{"type":"string","writeOnly":true}},"required":["message"]}"""
+            : """{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}""";
+        using var doc = JsonDocument.Parse(schema);
         return doc.RootElement.Clone();
     }
 

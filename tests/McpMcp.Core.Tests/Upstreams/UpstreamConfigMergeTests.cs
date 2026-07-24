@@ -16,6 +16,10 @@ public class UpstreamConfigMergeTests
         "srv", "Server", UpstreamTransportKind.Stdio, Enabled: true,
         Stdio: new StdioTransportOptions("cmd", ["--x"], env));
 
+    private static UpstreamServerConfig Cli(IReadOnlyDictionary<string, string>? env) => new(
+        "cli", "CLI", UpstreamTransportKind.Cli, Enabled: true,
+        Cli: new CliTransportOptions("cmd", [new CliToolSpec("run")], EnvironmentVariables: env));
+
     [Fact]
     public void Empty_env_keeps_the_previous_secrets()
     {
@@ -71,5 +75,69 @@ public class UpstreamConfigMergeTests
             .Http!.Headers.Should().ContainKey("Authorization");
         UpstreamConfigMerge.CarryOverSecrets(editedApi, previousApi)
             .OpenApi!.Credential.Should().Be("tok");
+    }
+
+    [Fact]
+    public void Cli_environment_is_carried_over_when_omitted()
+    {
+        var previous = Cli(new Dictionary<string, string> { ["TOKEN"] = "cli-secret" });
+
+        var merged = UpstreamConfigMerge.CarryOverSecrets(Cli(null), previous);
+
+        merged.Cli!.EnvironmentVariables.Should().ContainKey("TOKEN")
+            .WhoseValue.Should().Be("cli-secret");
+    }
+
+    [Fact]
+    public void Masked_values_keep_the_corresponding_secret_while_explicit_values_change()
+    {
+        var previous = Cli(new Dictionary<string, string>
+        {
+            ["TOKEN"] = "old-token",
+            ["SECOND"] = "old-second",
+        });
+        var edited = Cli(new Dictionary<string, string>
+        {
+            ["TOKEN"] = UpstreamConfigRedactor.Mask,
+            ["SECOND"] = "new-second",
+        });
+
+        var merged = UpstreamConfigMerge.CarryOverSecrets(edited, previous);
+
+        merged.Cli!.EnvironmentVariables.Should().BeEquivalentTo(new Dictionary<string, string>
+        {
+            ["TOKEN"] = "old-token",
+            ["SECOND"] = "new-second",
+        });
+    }
+
+    [Fact]
+    public void Empty_cli_environment_explicitly_resets_all_secrets()
+    {
+        var previous = Cli(new Dictionary<string, string> { ["TOKEN"] = "old-token" });
+
+        var merged = UpstreamConfigMerge.CarryOverSecrets(
+            Cli(new Dictionary<string, string>()), previous);
+
+        merged.Cli!.EnvironmentVariables.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Empty_openapi_credential_explicitly_resets_the_secret()
+    {
+        var previous = new UpstreamServerConfig(
+            "api", "API", UpstreamTransportKind.OpenApi, true,
+            OpenApi: new OpenApiTransportOptions(
+                new Uri("https://example.invalid/openapi.json"),
+                AuthKind: OpenApiAuthKind.Bearer,
+                Credential: "old-token"));
+        var edited = previous with
+        {
+            OpenApi = previous.OpenApi! with { Credential = string.Empty },
+        };
+
+        var merged = UpstreamConfigMerge.CarryOverSecrets(edited, previous);
+
+        merged.OpenApi!.Credential.Should().BeNull();
     }
 }

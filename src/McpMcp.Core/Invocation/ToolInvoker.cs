@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Json.Schema;
 using McpMcp.Abstractions;
 using McpMcp.Core.Approvals;
@@ -168,7 +169,7 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
         }
 
         // Freigabe-Pflicht (FR-32, ADR-0012): ebenfalls vor dem Upstream, kein Seiteneffekt.
-        if (await CheckApprovalAsync(request, ct).ConfigureAwait(false) is { } approvalMessage)
+        if (await CheckApprovalAsync(entry, request, ct).ConfigureAwait(false) is { } approvalMessage)
         {
             return Fail(InvocationStatus.ApprovalRequired, approvalMessage, started);
         }
@@ -272,16 +273,23 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
     /// Prüft die Freigabe-Pflicht (FR-32, ADR-0012). Liefert eine Meldung, wenn der Call auf eine
     /// Freigabe warten muss — sonst null (frei oder nicht freigabepflichtig).
     /// </summary>
-    private async Task<string?> CheckApprovalAsync(ToolInvocationRequest request, CancellationToken ct)
+    private async Task<string?> CheckApprovalAsync(
+        CatalogEntry entry, ToolInvocationRequest request, CancellationToken ct)
     {
-        if (_approvalPolicy is null || _approvalStore is null || !_approvalPolicy.RequiresApproval(request.Tool))
+        var requiredByPolicy = _approvalPolicy?.RequiresApproval(request.Tool) == true;
+        if (!entry.RequiresApproval && !requiredByPolicy)
         {
             return null;
         }
 
+        if (_approvalStore is null)
+        {
+            return "Dieses Tool erfordert eine menschliche Freigabe, aber der Approval-Store ist nicht verfügbar.";
+        }
+
         // Fingerprint über die REDIGIERTEN Argumente — die Queue soll keine Secrets im Klartext
         // halten, und die Freigabe bindet trotzdem an genau diesen Aufruf.
-        var redacted = _redaction.RedactArguments(request.Tool, request.Arguments);
+        var redacted = RedactArguments(entry, request.Tool, request.Arguments);
         var fingerprint = ApprovalFingerprint.Compute(request.Caller, request.Tool, redacted);
 
         if (await _approvalStore.TryConsumeApprovalAsync(request.Caller, request.Tool, fingerprint, ct)
@@ -352,7 +360,7 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
 
     private void Audit(ToolInvocationRequest request, CatalogEntry? entry, ToolInvocationResult result)
     {
-        var redacted = _redaction.RedactArguments(request.Tool, request.Arguments);
+        var redacted = RedactArguments(entry, request.Tool, request.Arguments);
 
         // FR-24: Ergebnis-Payloads landen nur im ausdrücklich aktivierten Debug-Modus im Log —
         // und auch dann maskiert, denn Antworten tragen genauso Secrets wie Argumente.
@@ -378,6 +386,33 @@ public sealed partial class ToolInvoker : IToolInvoker, IDisposable
 
     private static ToolInvocationResult Fail(InvocationStatus status, string message, long started)
         => new(status, null, message, Elapsed(started));
+
+    private JsonElement RedactArguments(
+        CatalogEntry? entry, NamespacedToolName tool, JsonElement arguments)
+    {
+        var redacted = _redaction.RedactArguments(tool, arguments);
+        if (redacted.ValueKind != JsonValueKind.Object
+            || entry?.InputSchema.ValueKind != JsonValueKind.Object
+            || !entry.InputSchema.TryGetProperty("properties", out var properties)
+            || properties.ValueKind != JsonValueKind.Object)
+        {
+            return redacted;
+        }
+
+        var node = JsonNode.Parse(redacted.GetRawText())!.AsObject();
+        foreach (var property in properties.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Object
+                && property.Value.TryGetProperty("writeOnly", out var writeOnly)
+                && writeOnly.ValueKind == JsonValueKind.True
+                && node.ContainsKey(property.Name))
+            {
+                node[property.Name] = McpMcp.Core.Audit.RedactionService.Mask;
+            }
+        }
+
+        return JsonSerializer.SerializeToElement(node);
+    }
 
     private static TimeSpan Elapsed(long started) => Stopwatch.GetElapsedTime(started);
 

@@ -19,7 +19,9 @@ public sealed record CatalogEntry(
     string Description,
     JsonElement InputSchema,
     CatalogEntryKind Kind,
-    int EstimatedSchemaTokens);
+    int EstimatedSchemaTokens,
+    CapabilityRisk Risk = CapabilityRisk.Read,
+    bool RequiresApproval = false);
 
 /// <summary>Profil-Sicht einer Identität: Pinned-Tools voll sichtbar, Rest optional lazy (ADR-0003).</summary>
 public sealed record ProfileView(

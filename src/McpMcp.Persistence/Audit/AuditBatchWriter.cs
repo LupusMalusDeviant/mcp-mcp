@@ -9,7 +9,8 @@ namespace McpMcp.Persistence.Audit;
 /// <summary>
 /// Liest den Audit-Channel und persistiert in Batches (Flush ≤ FlushInterval oder ≤ MaxBatchSize,
 /// ADR-0007). Beim Shutdown wird der Channel vollständig gedraint — Audit-Vollständigkeit geht
-/// vor Shutdown-Geschwindigkeit. Ein fehlgeschlagener Batch wird geloggt und verworfen (kein Poison-Loop).
+/// vor Shutdown-Geschwindigkeit. Best-Effort loggt fehlgeschlagene Batches; Compliance retryt
+/// sie mit Backpressure.
 /// </summary>
 public sealed partial class AuditBatchWriter
 {
@@ -66,7 +67,7 @@ public sealed partial class AuditBatchWriter
                     }
                 }
 
-                await WriteBatchAsync(batch).ConfigureAwait(false);
+                await WriteBatchAsync(batch, ct).ConfigureAwait(false);
                 batch.Clear();
             }
         }
@@ -80,12 +81,12 @@ public sealed partial class AuditBatchWriter
             batch.Add(evt);
             if (batch.Count >= _options.AuditMaxBatchSize)
             {
-                await WriteBatchAsync(batch).ConfigureAwait(false);
+                await WriteBatchAsync(batch, CancellationToken.None).ConfigureAwait(false);
                 batch.Clear();
             }
         }
 
-        await WriteBatchAsync(batch).ConfigureAwait(false);
+        await WriteBatchAsync(batch, CancellationToken.None).ConfigureAwait(false);
 
         if (_sink.DroppedCount > 0)
         {
@@ -93,22 +94,38 @@ public sealed partial class AuditBatchWriter
         }
     }
 
-    private async Task WriteBatchAsync(List<AuditEvent> batch)
+    private async Task WriteBatchAsync(List<AuditEvent> batch, CancellationToken ct)
     {
         if (batch.Count == 0)
         {
             return;
         }
 
-        try
+        while (true)
         {
-            await using var db = await _factory.CreateDbContextAsync(CancellationToken.None).ConfigureAwait(false);
-            db.AuditEvents.AddRange(batch.Select(ToRow));
-            await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Log.BatchWriteFailed(_logger, ex, batch.Count);
+            try
+            {
+                await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+                db.AuditEvents.AddRange(batch.Select(ToRow));
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                _sink.ReportPersistenceSuccess();
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _sink.ReportPersistenceFailure();
+                Log.BatchWriteFailed(_logger, ex, batch.Count, _options.AuditMode.ToString());
+                if (_options.AuditMode == AuditDeliveryMode.BestEffort)
+                {
+                    return;
+                }
+
+                await Task.Delay(_options.AuditRetryInterval, _time, ct).ConfigureAwait(false);
+            }
         }
     }
 
@@ -149,8 +166,9 @@ public sealed partial class AuditBatchWriter
     private static partial class Log
     {
         [LoggerMessage(Level = LogLevel.Error,
-            Message = "Audit-Batch mit {Count} Ereignissen konnte nicht persistiert werden — Batch verworfen.")]
-        public static partial void BatchWriteFailed(ILogger logger, Exception ex, int count);
+            Message = "Audit-Batch mit {Count} Ereignissen konnte nicht persistiert werden (Modus {Mode}).")]
+        public static partial void BatchWriteFailed(
+            ILogger logger, Exception ex, int count, string mode);
 
         [LoggerMessage(Level = LogLevel.Warning,
             Message = "Audit-Channel war voll: {Count} Ereignisse wurden verworfen (Kapazität erhöhen oder DB-Last prüfen).")]

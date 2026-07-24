@@ -94,6 +94,53 @@ jobs:
           MCPMCP_RUN_BENCHMARK: "1"
         run: dotnet test tests/McpMcp.Integration.Tests --configuration Release --filter "FullyQualifiedName~PerformanceBenchmarkTests" --logger "console;verbosity=detailed"
 
+  wasi-component-spike:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: spikes/wasi-component-runtime
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pinnt Compiler, rustfmt und clippy. Der Spike bleibt
+      # absichtlich außerhalb der Server-/Core-Abhängigkeiten.
+      - name: Verify pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Lints
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: WIT discovery and deny-by-default runtime tests
+        run: cargo test --locked
+
+  isolation-comparison:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spikes/wasi-component-runtime
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Pull digest-pinned comparison image
+        run: docker pull alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+
+      - name: Compare short-lived WASI and hardened OCI startup floors
+        run: >-
+          cargo run --locked --quiet -- compare-container
+          alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+          15
+
   docker:
     runs-on: ubuntu-latest
     steps:

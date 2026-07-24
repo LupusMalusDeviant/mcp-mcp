@@ -89,7 +89,7 @@ Requires the .NET 10 SDK. The integration tests spawn reference MCP servers (`te
 The full design documentation lives in [`docs/`](docs/) — written in **German**:
 
 - [`docs/prd/`](docs/prd/) — requirements (Lastenheft): 41 functional requirements, NFRs, acceptance criteria
-- [`docs/adr/`](docs/adr/README.md) — 14 architecture decision records (proxy architecture, token strategy, RBAC model, CLI transport, …)
+- [`docs/adr/`](docs/adr/README.md) — architecture decisions for proxying, governance, CLI runtimes, capabilities and connectors
 - [`docs/plans/`](docs/plans/) — implementation plan (Pflichtenheft): work packages with definitions of done, test strategy, coding rules
 
 ## Roadmap
@@ -104,7 +104,8 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M6 "Guardrails" | Secret detection in the invoker — blocks credentials in tool arguments and results, runtime-editable rules ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) | ✅ done |
 | M7 "All optional reqs" | Every Kann-requirement decided: approval flows ([ADR-0012](docs/adr/0012-approval-flows-asynchron.md)) and signed webhook triggers ([ADR-0013](docs/adr/0013-webhook-trigger.md)) built; FR-04 documented as a deviation | ✅ done |
 | M8 "v0.5.0 release" | [Acceptance against the actual state](docs/acceptance/v1.2.md), then the first valid release — deliberately < 1.0 pending operational uptime | ✅ [released](https://github.com/LupusMalusDeviant/mcp-mcp/releases/tag/v0.5.0) |
-| CLI transport | CLI programs as a fourth upstream transport — shell-free execution (`ArgumentList`), fixed-binary allowlist, governed by the same pipeline ([ADR-0014](docs/adr/0014-cli-programme-als-upstream-transport.md)). UI form + structured per-command schemas still open | 🧪 prototype (on `main`, not in a release) |
+| CLI transport | Typed/risk-classified manifests, byte-capped stdout/stderr, isolated environment, canonical path roots, optional SHA-256 pin, concurrency and process-tree lifecycle ([ADR-0014](docs/adr/0014-cli-programme-als-upstream-transport.md), [ADR-0018](docs/adr/0018-native-prozess-und-container-isolation.md)). Native host execution is still not a sandbox. | 🧪 hardened host-process beta; WASI/container isolation open |
+| Gateway CLI | Official public-contract client for status, unified tool discovery/invocation, servers, approvals and audit ([usage](docs/gateway-cli.md)) | 🧪 on `main`, not in a release |
 | M9 "1.0" | Real-world operation over time — the one thing tests can't provide | ⏳ open |
 
 ## License

@@ -1,0 +1,13 @@
+{
+  "world": "connector",
+  "capabilities": [
+    {
+      "nativeName": "tools.run",
+      "kind": "Tool",
+      "execution": "Synchronous",
+      "inputType": "request",
+      "resultType": "result<response,string>",
+      "imports": []
+    }
+  ]
+}

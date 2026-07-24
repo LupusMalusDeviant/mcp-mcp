@@ -5,20 +5,21 @@ using McpMcp.Abstractions;
 namespace McpMcp.Upstream.Cli;
 
 /// <summary>
-/// CLI→MCP-Brücke (ADR-0014): ein fest konfiguriertes Kommandozeilen-Programm erscheint als
-/// normaler Upstream — hot-swappable, profilierbar und auditiert wie jeder MCP-Server. Jedes
-/// <see cref="CliToolSpec"/> wird ein Tool; Aufrufe laufen strikt shell-frei über
-/// <see cref="ProcessStartInfo.ArgumentList"/> (keine Injection, keine Befehlsverkettung).
+/// Shell-freie CLI-Brücke mit typisierten Manifesten, isoliertem Environment, kanonischer
+/// Pfadprüfung, Parallelitätsgrenzen und während des Lesens begrenzten Ausgabestreams.
 /// </summary>
 public sealed class CliUpstreamConnector : IUpstreamConnector
 {
     public UpstreamTransportKind Kind => UpstreamTransportKind.Cli;
 
-    public Task<IUpstreamConnection> ConnectAsync(ServerId id, UpstreamServerConfig config, CancellationToken ct)
+    public Task<IUpstreamConnection> ConnectAsync(
+        ServerId id, UpstreamServerConfig config, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(config);
+        ct.ThrowIfCancellationRequested();
         var options = config.Cli
-            ?? throw new ArgumentException($"Config '{config.Slug}' hat keine Cli-Optionen.", nameof(config));
+            ?? throw new ArgumentException(
+                $"Config '{config.Slug}' hat keine Cli-Optionen.", nameof(config));
         return Task.FromResult<IUpstreamConnection>(new CliUpstreamConnection(id, options));
     }
 }
@@ -26,19 +27,32 @@ public sealed class CliUpstreamConnector : IUpstreamConnector
 internal sealed class CliUpstreamConnection : IUpstreamConnection
 {
     private const int DefaultTimeoutSeconds = 30;
+    private static readonly TimeSpan StreamDrainTimeout = TimeSpan.FromSeconds(5);
+
     private readonly CliTransportOptions _options;
+    private readonly ResolvedCliProcess _resolvedProcess;
     private readonly Dictionary<string, CliToolSpec> _tools;
+    private readonly Dictionary<string, SemaphoreSlim> _commandGates;
+    private readonly SemaphoreSlim _upstreamGate;
+    private readonly CancellationTokenSource _shutdown = new();
 
     public CliUpstreamConnection(ServerId id, CliTransportOptions options)
     {
         Id = id;
         _options = options;
-        _tools = options.Tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
+        _resolvedProcess = CliProcessPolicy.Resolve(options);
+        _tools = options.Tools.ToDictionary(tool => tool.Name, StringComparer.Ordinal);
+        _upstreamGate = new SemaphoreSlim(options.MaxConcurrency, options.MaxConcurrency);
+        _commandGates = options.Tools
+            .Where(tool => tool.MaxConcurrency is not null)
+            .ToDictionary(
+                tool => tool.Name,
+                tool => new SemaphoreSlim(tool.MaxConcurrency!.Value, tool.MaxConcurrency.Value),
+                StringComparer.Ordinal);
     }
 
     public ServerId Id { get; }
 
-    // CLI-Upstreams pushen keine Server-Notifications — das Event bleibt bewusst leer verdrahtet.
     public event EventHandler<UpstreamNotificationEventArgs>? NotificationReceived
     {
         add { }
@@ -46,163 +60,256 @@ internal sealed class CliUpstreamConnection : IUpstreamConnection
     }
 
     public Task<UpstreamInventory> DiscoverAsync(CancellationToken ct)
-        => Task.FromResult(new UpstreamInventory(
-            [.. _options.Tools.Select(t => new ToolDescriptor(t.Name, t.Description, BuildSchema(t)))],
+    {
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(new UpstreamInventory(
+            [.. _options.Tools.Select(tool => new ToolDescriptor(
+                tool.Name,
+                tool.Description,
+                CliArgumentBinder.BuildSchema(tool),
+                tool.Risk,
+                tool.Risk is CapabilityRisk.Destructive or CapabilityRisk.Privileged))],
             [],
             []));
+    }
 
-    public async Task<JsonElement> CallToolAsync(string toolName, JsonElement args, CancellationToken ct)
+    public async Task<JsonElement> CallToolAsync(
+        string toolName, JsonElement args, CancellationToken ct)
     {
         if (!_tools.TryGetValue(toolName, out var spec))
         {
-            throw new InvalidOperationException($"Kommando '{toolName}' existiert nicht in diesem CLI-Upstream.");
+            throw new InvalidOperationException(
+                $"Kommando '{toolName}' existiert nicht in diesem CLI-Upstream.");
         }
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = _options.Executable,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false, // KEIN Shell: Argumente literal, keine Interpolation/Verkettung.
-            CreateNoWindow = true,
-            WorkingDirectory = _options.WorkingDirectory ?? string.Empty,
-        };
-        foreach (var fixedArg in spec.FixedArguments ?? [])
-        {
-            psi.ArgumentList.Add(fixedArg);
-        }
-
-        if (spec.AllowCallerArguments)
-        {
-            foreach (var callerArg in ReadCallerArgs(args))
-            {
-                psi.ArgumentList.Add(callerArg);
-            }
-        }
-
-        if (_options.EnvironmentVariables is { } env)
-        {
-            foreach (var (key, value) in env)
-            {
-                psi.Environment[key] = value;
-            }
-        }
-
-        using var process = new Process { StartInfo = psi };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException($"Prozess '{_options.Executable}' ließ sich nicht starten.");
-        }
-
-        // Beide Streams nebenläufig lesen (sonst Pipe-Deadlock bei großer Ausgabe). Der Read läuft
-        // mit CancellationToken.None und endet, sobald der Prozess (regulär oder per Kill) EOF liefert.
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
-
-        var timeout = _options.TimeoutSeconds is { } s and > 0 ? TimeSpan.FromSeconds(s) : TimeSpan.FromSeconds(DefaultTimeoutSeconds);
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(timeout);
-
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
+        await _upstreamGate.WaitAsync(linked.Token).ConfigureAwait(false);
+        SemaphoreSlim? commandGate = null;
+        var commandGateAcquired = false;
         try
         {
-            await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKill(process);
-            var killedErr = await stderrTask.ConfigureAwait(false);
-            await stdoutTask.ConfigureAwait(false); // Task beobachten, kein unbeobachteter Fehler.
-            if (ct.IsCancellationRequested)
+            if (_commandGates.TryGetValue(toolName, out commandGate))
             {
-                throw; // Aufrufer hat abgebrochen — kein Timeout-Ergebnis vortäuschen.
+                await commandGate.WaitAsync(linked.Token).ConfigureAwait(false);
+                commandGateAcquired = true;
             }
 
-            var suffix = killedErr.Length > 0 ? "\n" + Cap(killedErr) : string.Empty;
-            return Result($"CLI timeout after {timeout.TotalSeconds:0}s - process killed.{suffix}", isError: true);
+            return await ExecuteAsync(spec, args, ct, linked.Token).ConfigureAwait(false);
         }
-
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        var body = stdout.Length > 0 ? stdout : stderr;
-        return Result(
-            body.Length > 0 ? Cap(body) : $"(exit {process.ExitCode}, no output)",
-            isError: process.ExitCode != 0);
+        finally
+        {
+            if (commandGateAcquired)
+            {
+                commandGate!.Release();
+            }
+            _upstreamGate.Release();
+        }
     }
 
     public Task<JsonElement> ReadResourceAsync(Uri uri, CancellationToken ct)
         => throw new NotSupportedException("CLI-Upstreams haben keine Resources.");
 
-    public Task<JsonElement> GetPromptAsync(string promptName, JsonElement? args, CancellationToken ct)
+    public Task<JsonElement> GetPromptAsync(
+        string promptName, JsonElement? args, CancellationToken ct)
         => throw new NotSupportedException("CLI-Upstreams haben keine Prompts.");
 
     public Task PingAsync(CancellationToken ct)
     {
-        // "Erreichbar" = das Binary ist auflösbar. Bei einem Pfad wird die Existenz geprüft; ein
-        // blanker Name wird der PATH-Auflösung überlassen (der echte Aufruf meldet Fehler klar).
-        var exe = _options.Executable;
-        if ((exe.Contains(Path.DirectorySeparatorChar, StringComparison.Ordinal)
-                || exe.Contains(Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
-            && !File.Exists(exe))
-        {
-            throw new FileNotFoundException($"CLI-Binary '{exe}' nicht gefunden.");
-        }
-
+        ct.ThrowIfCancellationRequested();
+        _ = CliProcessPolicy.Resolve(_options);
         return Task.CompletedTask;
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-    private static IEnumerable<string> ReadCallerArgs(JsonElement args)
+    public ValueTask DisposeAsync()
     {
-        if (args.ValueKind is not JsonValueKind.Object
-            || !args.TryGetProperty("args", out var array)
-            || array.ValueKind is not JsonValueKind.Array)
+        _shutdown.Cancel();
+        return ValueTask.CompletedTask;
+    }
+
+    private async Task<JsonElement> ExecuteAsync(
+        CliToolSpec spec,
+        JsonElement args,
+        CancellationToken callerToken,
+        CancellationToken executionToken)
+    {
+        var startInfo = CliProcessPolicy.CreateStartInfo(_options, _resolvedProcess);
+        foreach (var fixedArgument in spec.FixedArguments ?? [])
         {
-            yield break;
+            startInfo.ArgumentList.Add(fixedArgument);
+        }
+        foreach (var callerArgument in CliArgumentBinder.Bind(spec, args, _options))
+        {
+            startInfo.ArgumentList.Add(callerArgument);
         }
 
-        foreach (var element in array.EnumerateArray())
+        using var process = new Process { StartInfo = startInfo };
+        if (!process.Start())
         {
-            yield return element.ValueKind is JsonValueKind.String ? element.GetString()! : element.GetRawText();
+            throw new InvalidOperationException(
+                $"Prozess '{_resolvedProcess.Executable}' ließ sich nicht starten.");
+        }
+
+        using var captureCts = new CancellationTokenSource();
+        var stdoutTask = BoundedProcessOutput.ReadAsync(
+            process.StandardOutput.BaseStream,
+            _options.MaxOutputBytes,
+            _resolvedProcess.Encoding,
+            captureCts.Token);
+        var stderrTask = BoundedProcessOutput.ReadAsync(
+            process.StandardError.BaseStream,
+            _options.MaxOutputBytes,
+            _resolvedProcess.Encoding,
+            captureCts.Token);
+
+        var timeout = TimeSpan.FromSeconds(
+            _options.TimeoutSeconds is > 0 ? _options.TimeoutSeconds.Value : DefaultTimeoutSeconds);
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(
+            executionToken, timeoutCts.Token);
+
+        var timedOut = false;
+        try
+        {
+            await process.WaitForExitAsync(waitCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            timedOut = timeoutCts.IsCancellationRequested && !callerToken.IsCancellationRequested;
+            TryKill(process);
+        }
+
+        var (stdout, stderr) = await DrainOutputAsync(
+            stdoutTask, stderrTask, captureCts).ConfigureAwait(false);
+        stdout = RedactKnownSecrets(stdout);
+        stderr = RedactKnownSecrets(stderr);
+
+        if (callerToken.IsCancellationRequested || _shutdown.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(callerToken.IsCancellationRequested
+                ? callerToken
+                : executionToken);
+        }
+
+        if (timedOut)
+        {
+            return Result(
+                exitCode: null,
+                timedOut: true,
+                stdout,
+                stderr,
+                $"CLI timeout after {timeout.TotalSeconds:0}s - process tree killed.",
+                isError: true);
+        }
+
+        var body = BuildBody(process.ExitCode, stdout.Text, stderr.Text);
+        return Result(
+            process.ExitCode,
+            timedOut: false,
+            stdout,
+            stderr,
+            body,
+            isError: process.ExitCode != 0);
+    }
+
+    private static async Task<(CapturedProcessStream Stdout, CapturedProcessStream Stderr)>
+        DrainOutputAsync(
+            Task<CapturedProcessStream> stdoutTask,
+            Task<CapturedProcessStream> stderrTask,
+            CancellationTokenSource captureCts)
+    {
+        try
+        {
+            await Task.WhenAll(stdoutTask, stderrTask)
+                .WaitAsync(StreamDrainTimeout)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            captureCts.Cancel();
+        }
+
+        return (
+            await ObserveCaptureAsync(stdoutTask).ConfigureAwait(false),
+            await ObserveCaptureAsync(stderrTask).ConfigureAwait(false));
+    }
+
+    private static async Task<CapturedProcessStream> ObserveCaptureAsync(
+        Task<CapturedProcessStream> capture)
+    {
+        try
+        {
+            return await capture.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return new CapturedProcessStream(string.Empty, 0, 0, Truncated: true);
         }
     }
 
-    private static JsonElement BuildSchema(CliToolSpec spec)
+    private CapturedProcessStream RedactKnownSecrets(CapturedProcessStream stream)
     {
-        if (!spec.AllowCallerArguments)
+        var text = stream.Text;
+        foreach (var secret in _options.EnvironmentVariables?.Values ?? [])
         {
-            return JsonSerializer.SerializeToElement(new { type = "object", properties = new { } });
-        }
-
-        return JsonSerializer.SerializeToElement(new
-        {
-            type = "object",
-            properties = new
+            if (secret.Length >= 4)
             {
-                args = new
-                {
-                    type = "array",
-                    items = new { type = "string" },
-                    description = "Extra arguments, appended literally (no shell) after the fixed arguments.",
-                },
-            },
-        });
+                text = text.Replace(secret, "***", StringComparison.Ordinal);
+            }
+        }
+        return stream with { Text = text };
     }
 
-    private static JsonElement Result(string text, bool isError)
+    private static string BuildBody(int exitCode, string stdout, string stderr)
+    {
+        if (exitCode == 0)
+        {
+            return stdout.Length > 0
+                ? stdout
+                : stderr.Length > 0
+                    ? stderr
+                    : "(exit 0, no output)";
+        }
+
+        if (stdout.Length > 0 && stderr.Length > 0)
+        {
+            return $"{stdout}\n[stderr]\n{stderr}";
+        }
+
+        return stdout.Length > 0
+            ? stdout
+            : stderr.Length > 0
+                ? stderr
+                : $"(exit {exitCode}, no output)";
+    }
+
+    private JsonElement Result(
+        int? exitCode,
+        bool timedOut,
+        CapturedProcessStream stdout,
+        CapturedProcessStream stderr,
+        string text,
+        bool isError)
         => JsonSerializer.SerializeToElement(new
         {
             content = new[] { new { type = "text", text } },
             isError,
+            cli = new
+            {
+                exitCode,
+                timedOut,
+                maxOutputBytesPerStream = _options.MaxOutputBytes,
+                stdout = StreamMetadata(stdout),
+                stderr = StreamMetadata(stderr),
+            },
         });
 
-    private string Cap(string value)
+    private static object StreamMetadata(CapturedProcessStream stream) => new
     {
-        var max = _options.MaxOutputBytes > 0 ? _options.MaxOutputBytes : 64 * 1024;
-        return value.Length <= max
-            ? value
-            : value[..max] + $"\n... [truncated, {value.Length - max} more chars]";
-    }
+        text = stream.Text,
+        totalBytes = stream.TotalBytes,
+        capturedBytes = stream.CapturedBytes,
+        truncated = stream.Truncated,
+    };
 
     private static void TryKill(Process process)
     {
@@ -215,11 +322,22 @@ internal sealed class CliUpstreamConnection : IUpstreamConnection
         }
         catch (InvalidOperationException)
         {
-            // Prozess ist zwischen Prüfung und Kill beendet worden — nichts zu tun.
         }
         catch (System.ComponentModel.Win32Exception)
         {
-            // Kill ließ sich nicht zustellen — im Prototyp toleriert.
+        }
+        catch (NotSupportedException)
+        {
+            try
+            {
+                process.Kill();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+            }
         }
     }
 }

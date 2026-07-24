@@ -1,11 +1,11 @@
 # Threat-Model & Security-Posture — MCP-MCP v1.0
 
-Stand: 2026-07-17. Ergänzt [SECURITY.md](../../SECURITY.md). Grundlage: Security-Audit WP7.2 (kein Critical, kein echtes High).
+Stand: 2026-07-24. Ergänzt [SECURITY.md](../../SECURITY.md).
 
 ## Vertrauensgrenzen
 
 ```
-[ Agent / REST-Client ] --API-Key--> [ GATEWAY ] --stdio/HTTP/OpenAPI--> [ Upstream-Server ]
+[ Agent / REST-/CLI-Client ] --API-Key--> [ GATEWAY ] --stdio/HTTP/OpenAPI/CLI--> [ Upstream ]
 [ Mensch ]              --Cookie---> [  (hält alle Credentials)  ]
 ```
 
@@ -16,7 +16,10 @@ Der Gateway ist der zentrale Vertrauensanker (ADR-0001): Er terminiert jeden Cal
 - **AuthN/AuthZ:** `/mcp` und `/api` beide hinter API-Key-Middleware (401 ohne gültigen Key); alle Management-Endpoints hinter Global-Grant-Schranke; kein ungeschützter Management-Pfad.
 - **SQL-Injection:** keine — ausschließlich parametrisierte EF-LINQ, kein Raw-SQL.
 - **XSS:** Blazor-Auto-Encoding; die zwei `MarkupString`-Stellen sind statische Literale; fremde Tool-Beschreibungen/Audit-Inhalte werden encodiert.
-- **Secret-Leakage:** `RedactionService` maskiert Secret-Muster in Audit-Argumenten; `RedactConfig` maskiert Env/Header/OpenAPI-Credentials in Admin-Antworten; kein Credential-Logging außer der bewussten Bootstrap-Ausnahme.
+- **Secret-Leakage:** `RedactionService` maskiert Secret-Muster in Audit-Argumenten;
+  `UpstreamConfigRedactor` maskiert stdio-/CLI-Environment, HTTP-Header und OpenAPI-Credentials in
+  Admin-Antworten; Connection-Test- und CLI-Prozessausgaben entfernen bekannte
+  Konfigurationssecrets.
 - **Crypto:** PBKDF2-SHA256, 100 000 Iterationen, 16-Byte-Salt (CSPRNG), `FixedTimeEquals`.
 - **OpenAPI-Parser-DoS:** `$ref`-Tiefe auf 32 gecappt, Zyklen/externe Refs abgelehnt.
 
@@ -39,6 +42,10 @@ Der Gateway ist der zentrale Vertrauensanker (ADR-0001): Er terminiert jeden Cal
 ## Akzeptierte / dokumentierte Restrisiken
 
 - **stdio-Upstreams ohne Sandbox** (ADR-0005): Admin-kontrollierter Command/Args/Env läuft ungesandboxt als Kindprozess mit Gateway-Rechten. Trust-Boundary: **nur vertrauenswürdige Server anschließen**; nur Admins dürfen Upstreams anlegen. Container-Isolation pro Upstream ist v2-Kandidat.
+- **CLI-Hostmodus ohne Sandbox** (ADR-0014/0018): Absolute kanonische Pfade, Roots, optionaler
+  SHA-256-Pin, isoliertes Environment, typisierte Parameter, Byte-/Zeit-/Parallelitätslimits und
+  Prozessbaum-Kill reduzieren die Angriffsfläche, bilden aber keine Kernel-Sandbox. Untrusted native
+  Programme benötigen den geplanten Containerpfad; neue Plugins sollen WASI Components verwenden.
 - **DataProtection-Key-Ring standardmäßig im Klartext auf der Platte** (`<datadir>/keys/`): entschlüsselt die at-rest verschlüsselten Upstream-Credentials. ✅ **v1.1 entschärft:** per `MCPMCP_KEYRING_CERT_PATH` lässt sich der Key-Ring mit einem X509-Zertifikat verschlüsseln (siehe [operations.md](../operations.md#key-ring-schützen)); ohne Konfiguration warnt der Gateway beim Start. Bleibt es beim Default, gilt weiterhin: **Datenvolume-Zugriff restriktiv** halten und wie ein Secret behandeln.
 - **Bootstrap-Key/UI-Passwort einmalig im Klartext geloggt**: bewusste Henne-Ei-Ausnahme (nur bei leerer DB, einmalig, LogLevel Warning). Ohne sie wäre eine frische Instanz unbenutzbar.
 - **Login-Endpoint ohne Antiforgery-Token**: vor der Anmeldung existiert kein gültiges Token; Login-CSRF-Restrisiko durch `SameSite=Strict` mitigiert.

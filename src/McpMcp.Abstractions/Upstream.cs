@@ -27,6 +27,34 @@ public enum OpenApiAuthKind
     Basic = 3,
 }
 
+public enum CapabilityRisk
+{
+    Read = 0,
+    Write = 1,
+    Destructive = 2,
+    Privileged = 3,
+}
+
+#pragma warning disable CA1720 // Öffentlicher Manifestvertrag verwendet die JSON-Schema-Typnamen.
+public enum CliParameterType
+{
+    String = 0,
+    Integer = 1,
+    Number = 2,
+    Boolean = 3,
+    Enum = 4,
+    Path = 5,
+    SecretReference = 6,
+}
+#pragma warning restore CA1720
+
+public enum CliPathAccess
+{
+    None = 0,
+    ReadOnly = 1,
+    Write = 2,
+}
+
 public sealed record StdioTransportOptions(
     string Command,
     IReadOnlyList<string> Arguments,
@@ -69,7 +97,15 @@ public sealed record CliTransportOptions(
     string? WorkingDirectory = null,
     IReadOnlyDictionary<string, string>? EnvironmentVariables = null,
     int? TimeoutSeconds = null,
-    int MaxOutputBytes = 64 * 1024);
+    int MaxOutputBytes = 64 * 1024,
+    bool AllowPathLookup = false,
+    IReadOnlyList<string>? AllowedExecutableRoots = null,
+    IReadOnlyList<string>? AllowedWorkingDirectoryRoots = null,
+    IReadOnlyList<string>? AllowedReadRoots = null,
+    IReadOnlyList<string>? AllowedWriteRoots = null,
+    int MaxConcurrency = 4,
+    string OutputEncoding = "utf-8",
+    string? ExecutableSha256 = null);
 
 /// <summary>
 /// Ein benanntes CLI-Kommando = ein Tool. <see cref="FixedArguments"/> stehen fest; ist
@@ -80,7 +116,29 @@ public sealed record CliToolSpec(
     string Name,
     string? Description = null,
     IReadOnlyList<string>? FixedArguments = null,
-    bool AllowCallerArguments = true);
+    bool AllowCallerArguments = false,
+    IReadOnlyList<CliParameterSpec>? Parameters = null,
+    CapabilityRisk Risk = CapabilityRisk.Read,
+    int? MaxConcurrency = null);
+
+public sealed record CliParameterSpec(
+    string Name,
+    string? Description = null,
+    CliParameterType Type = CliParameterType.String,
+    int? Position = null,
+    string? Flag = null,
+    bool Required = false,
+    JsonElement? DefaultValue = null,
+    IReadOnlyList<string>? AllowedValues = null,
+    string? Pattern = null,
+    double? Minimum = null,
+    double? Maximum = null,
+    CliPathAccess PathAccess = CliPathAccess.None,
+    bool Repeatable = false,
+    bool Sensitive = false,
+    int? MaxLength = null,
+    IReadOnlyList<string>? ConflictsWith = null,
+    IReadOnlyList<string>? Requires = null);
 
 public sealed record RestartPolicy(
     int MaxRetries,
@@ -107,7 +165,12 @@ public sealed record UpstreamServerConfig(
     TimeSpan? CallTimeout = null,
     CliTransportOptions? Cli = null);
 
-public sealed record ToolDescriptor(string Name, string? Description, JsonElement InputSchema);
+public sealed record ToolDescriptor(
+    string Name,
+    string? Description,
+    JsonElement InputSchema,
+    CapabilityRisk Risk = CapabilityRisk.Read,
+    bool RequiresApproval = false);
 
 public sealed record ResourceDescriptor(Uri Uri, string Name, string? Description, string? MimeType);
 

@@ -69,4 +69,33 @@ public class ConnectionTesterScrubTests
         UpstreamConnectionTester.ScrubSecrets("Port 1234 nicht erreichbar", config)
             .Should().Be("Port 1234 nicht erreichbar");
     }
+
+    [Fact]
+    public void Cli_environment_values_are_removed_even_when_embedded()
+    {
+        const string secret = "cli_tok_supergeheim987";
+        var config = new UpstreamServerConfig(
+            "cli", "CLI", UpstreamTransportKind.Cli, true,
+            Cli: new CliTransportOptions(
+                "tool", [new CliToolSpec("run")],
+                EnvironmentVariables: new Dictionary<string, string> { ["CLI_TOKEN"] = secret }));
+
+        var scrubbed = UpstreamConnectionTester.ScrubSecrets(
+            $"Start fehlgeschlagen: CLI_TOKEN=prefix-{secret}-suffix", config);
+
+        scrubbed.Should().Be("Start fehlgeschlagen: CLI_TOKEN=prefix-***-suffix");
+    }
+
+    [Fact]
+    public void Short_cli_environment_values_are_not_treated_as_secrets()
+    {
+        var config = new UpstreamServerConfig(
+            "cli", "CLI", UpstreamTransportKind.Cli, true,
+            Cli: new CliTransportOptions(
+                "tool", [new CliToolSpec("run")],
+                EnvironmentVariables: new Dictionary<string, string> { ["MODE"] = "on" }));
+
+        UpstreamConnectionTester.ScrubSecrets("connection refused", config)
+            .Should().Be("connection refused");
+    }
 }
