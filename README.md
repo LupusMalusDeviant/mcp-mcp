@@ -6,17 +6,19 @@
 
 **A self-hosted meta-MCP gateway on .NET** — connect one endpoint to your agents, and manage all your MCP servers behind it.
 
+> **[Release v0.5.0](https://github.com/LupusMalusDeviant/mcp-mcp/releases/tag/v0.5.0)** — the first valid release. Feature-complete and thoroughly tested (**317 tests**, 86.9 % core coverage, against SQLite *and* real PostgreSQL), but **never run in production**. The version is deliberately below 1.0: it works and is proven by tests, not yet by operational uptime. 1.0 follows once there's real-world runtime behind it.
+
 > [!CAUTION]
-> **The v1.0.0 and v1.1.0 releases have been retracted — do not use them.**
+> **The earlier v1.0.0 and v1.1.0 tags are retracted — do not use them.**
 > On the lazy path (`invoke_tool`) they wrote tool arguments to the audit log **unredacted**, so
 > credentials passed through that path ended up in the database in plaintext. If you ran either
 > release, check the `AuditEvents` table, rotate anything exposed, and delete the affected rows.
-> See the [threat model](docs/security/threat-model.md) for details. The fix is on `main`;
-> a corrected release follows once the planned scope is complete and independently verified.
+> That v0.5.0 carries the *lower* number is intentional — the 1.x line was never a valid release,
+> and 0.5 describes the maturity more honestly. See the [threat model](docs/security/threat-model.md).
 
-> **Current state (unreleased, on `main`).** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. It also **scans tool arguments and results for credentials** and blocks them before they reach the upstream or the model's context window ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) — rules are editable at runtime, findings never contain the matched value, and the check costs ~0.05 ms per call. Dockerized (< 300 MB, non-root), 280+ tests green on Windows + Linux (persistence also against real PostgreSQL), [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
+> **What it does.** The gateway aggregates MCP servers and imported REST APIs, speaks MCP **and** REST, enforces RBAC + rate limits, audits every call, saves context tokens via profiles/meta-tools (≥ 96 % reduction in the reference setup), hot-swaps servers without restart, federates to other gateways, and ships a Blazor admin UI. It **scans tool arguments and results for credentials** and blocks them before they reach the upstream or the model's context window ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)); it gates chosen tools behind **human approval** ([ADR-0012](docs/adr/0012-approval-flows-asynchron.md)) and accepts **signed webhook triggers** ([ADR-0013](docs/adr/0013-webhook-trigger.md)). Dockerized (< 300 MB, non-root, amd64 **and** arm64), [formal NFR-01 benchmark](docs/acceptance/performance.md) on reference hardware: **p95 = 7.3 ms** per call, ~6400 calls/s, 0 errors under 20 sessions / 100 in-flight.
 >
-> Pattern-based detection catches what has a pattern (`AKIA…`, `ghp_…`, PEM blocks); a random 32-char password is indistinguishable from a file id. The guardrail is an additional layer, not a substitute for keeping secrets out of tool results.
+> Pattern-based secret detection catches what has a pattern (`AKIA…`, `ghp_…`, PEM blocks); a random 32-char password is indistinguishable from a file id. The guardrail is an additional layer, not a substitute for keeping secrets out of tool results.
 >
 > A security audit was performed before v1.0, but it missed the redaction defect above — the gap was
 > only found later by an independent requirement-versus-code review. Treat the audit as one input,
@@ -98,10 +100,11 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M2 "Enforcement stands" | Catalog, RBAC, audit, MCP endpoint, hot-swap | ✅ done |
 | M3 "Both bridges carry" | REST facade, OpenAPI import | ✅ done |
 | M4 "v1.0" | Web UI, hardening, security audit, Docker release | ✅ done |
-| M5 "Gap closure" | 23 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done, unreleased |
-| M6 "Guardrails" | Secret detection in the invoker — blocks credentials in tool arguments and results, runtime-editable rules ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) | ✅ done, unreleased |
-| M7 "All optional reqs" | Every Kann-requirement decided: approval flows ([ADR-0012](docs/adr/0012-approval-flows-asynchron.md)) and signed webhook triggers ([ADR-0013](docs/adr/0013-webhook-trigger.md)) built; FR-04 documented as a deviation | ✅ done, unreleased |
-| M8 "Corrected release" | [Acceptance rewritten against the actual state](docs/acceptance/v1.2.md); release itself still pending | 🔄 acceptance ✅, release open |
+| M5 "Gap closure" | 23 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done |
+| M6 "Guardrails" | Secret detection in the invoker — blocks credentials in tool arguments and results, runtime-editable rules ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) | ✅ done |
+| M7 "All optional reqs" | Every Kann-requirement decided: approval flows ([ADR-0012](docs/adr/0012-approval-flows-asynchron.md)) and signed webhook triggers ([ADR-0013](docs/adr/0013-webhook-trigger.md)) built; FR-04 documented as a deviation | ✅ done |
+| M8 "v0.5.0 release" | [Acceptance against the actual state](docs/acceptance/v1.2.md), then the first valid release — deliberately < 1.0 pending operational uptime | ✅ [released](https://github.com/LupusMalusDeviant/mcp-mcp/releases/tag/v0.5.0) |
+| M9 "1.0" | Real-world operation over time — the one thing tests can't provide | ⏳ open |
 
 ## License
 
