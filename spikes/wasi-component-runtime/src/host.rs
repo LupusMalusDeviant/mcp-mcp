@@ -3,9 +3,12 @@
 //! Der Rust-Host spricht mit dem .NET-Gateway über **length-prefixed JSON über stdio**: jede
 //! Nachricht ist ein 4-Byte-Big-Endian-Längenpräfix gefolgt von einem JSON-Body. `stdout` gehört
 //! dem Protokoll (Logs strikt auf `stderr`, wie die MCP-stdio-Server). Die Verarbeitung liegt in
-//! einer reinen, testbaren [`Session`]; der Loop macht nur IO. `load`/`invoke` folgen als nächste
-//! WP1-Schritte — dieser Stand deckt Framing, Handshake mit Versionsverhandlung, `health` und
-//! `shutdown` ab.
+//! einer reinen, testbaren [`Session`]; der Loop macht nur IO.
+//!
+//! Kommandos: `hello` (Versionsverhandlung), `load` (Signaturprüfung gegen gepinnte Publisher +
+//! Grants, fail-closed), `discover` (Exports des geladenen Components), `invoke` (Aufruf eines
+//! Exports mit Limits und Truncation-Metadaten), `health`, `shutdown`. Fehler sind strukturiert
+//! (`code` + `message`) und beenden den Host nicht.
 
 use std::io::{self, Read, Write};
 
@@ -16,8 +19,9 @@ use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CapabilityGrants, GrantAuditRecord, RUNTIME_VERSION, grant_audit_record, pinned_publisher,
-    run_wasi_component, verify_component_signature,
+    CapabilityGrants, ExecutionLimits, GrantAuditRecord, InvocationOutcome, RUNTIME_VERSION,
+    discover_component_tools, grant_audit_record, invoke_component_tool, pinned_publisher,
+    verify_component_signature,
 };
 
 /// Protokollversion des IPC-Vertrags. Inkompatible Versionen werden beim Handshake abgewiesen.
@@ -49,8 +53,19 @@ pub enum Request {
         #[serde(default)]
         grants: CapabilityGrants,
     },
-    /// Führt das geladene Component aus.
-    Invoke,
+    /// Listet die aufrufbaren Tools (Exports) des geladenen Components.
+    Discover,
+    /// Ruft ein Tool des geladenen Components auf.
+    Invoke {
+        /// Export-Name; unbekannte Namen werden abgewiesen.
+        tool: String,
+        /// Argumente für typisierte Exports (Spike: `s32`).
+        #[serde(default)]
+        args: Vec<i32>,
+        /// Limits für diesen Aufruf; fehlend = enge Defaults.
+        #[serde(default)]
+        limits: ExecutionLimits,
+    },
     /// Liveness/Readiness-Abfrage.
     Health,
     /// Ordentlicher Shutdown.
@@ -70,8 +85,12 @@ pub enum Response {
     Loaded {
         audit: GrantAuditRecord,
     },
+    Discovered {
+        tools: Vec<String>,
+    },
     Invoked {
-        stdout: String,
+        #[serde(flatten)]
+        outcome: InvocationOutcome,
     },
     Health {
         status: String,
@@ -155,12 +174,21 @@ impl Session {
                     Err(failure) => error("load-rejected", failure.to_string()),
                 }
             }
-            Request::Invoke => {
+            Request::Discover => {
                 let Some(loaded) = self.loaded.as_ref() else {
                     return error("not-loaded", "kein Component geladen — load zuerst senden");
                 };
-                match run_wasi_component(&loaded.bytes, &loaded.grants) {
-                    Ok(stdout) => (Response::Invoked { stdout }, Control::Continue),
+                match discover_component_tools(&loaded.bytes) {
+                    Ok(tools) => (Response::Discovered { tools }, Control::Continue),
+                    Err(failure) => error("discover-failed", failure.to_string()),
+                }
+            }
+            Request::Invoke { tool, args, limits } => {
+                let Some(loaded) = self.loaded.as_ref() else {
+                    return error("not-loaded", "kein Component geladen — load zuerst senden");
+                };
+                match invoke_component_tool(&loaded.bytes, &loaded.grants, &tool, &args, &limits) {
+                    Ok(outcome) => (Response::Invoked { outcome }, Control::Continue),
                     Err(failure) => error("invoke-failed", failure.to_string()),
                 }
             }
@@ -284,6 +312,15 @@ mod tests {
             protocol_version: PROTOCOL_VERSION.to_owned(),
         });
         session
+    }
+
+    /// Standard-Invoke auf den WASI-Kommando-Export (Name wird reflektiert, nicht geraten).
+    fn run_request() -> Request {
+        Request::Invoke {
+            tool: crate::wasi_command_export(GUEST).unwrap(),
+            args: vec![],
+            limits: ExecutionLimits::default(),
+        }
     }
 
     fn load_request(signing: &SigningKey, grants: CapabilityGrants) -> Request {
@@ -429,7 +466,7 @@ mod tests {
 
     #[test]
     fn invoke_without_load_is_rejected() {
-        let (response, _) = negotiated().handle(Request::Invoke);
+        let (response, _) = negotiated().handle(run_request());
         assert!(matches!(response, Response::Error { code, .. } if code == "not-loaded"));
     }
 
@@ -440,7 +477,7 @@ mod tests {
         // Ohne Grant: WASI wird nicht gelinkt -> Ausfuehrung scheitert vor dem Start.
         let mut denied = negotiated();
         denied.handle(load_request(&signing, CapabilityGrants::default()));
-        let (response, _) = denied.handle(Request::Invoke);
+        let (response, _) = denied.handle(run_request());
         assert!(matches!(response, Response::Error { code, .. } if code == "invoke-failed"));
 
         // Mit Environment-Grant laeuft die echte Component.
@@ -448,17 +485,137 @@ mod tests {
         grants.environment.insert("MCPMCP_SPIKE".to_owned());
         let mut allowed = negotiated();
         allowed.handle(load_request(&signing, grants));
-        let (response, _) = allowed.handle(Request::Invoke);
+        let (response, _) = allowed.handle(run_request());
         match response {
-            Response::Invoked { stdout } => assert!(stdout.contains("mcpmcp-guest-ok")),
+            Response::Invoked { outcome } => {
+                assert!(outcome.stdout.contains("mcpmcp-guest-ok"));
+                assert!(!outcome.truncated);
+            }
             other => panic!("expected invoked, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn discover_lists_the_loaded_components_tools() {
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+        let mut session = negotiated();
+        session.handle(load_request(&signing, CapabilityGrants::default()));
+
+        let (response, control) = session.handle(Request::Discover);
+
+        assert_eq!(control, Control::Continue);
+        match response {
+            Response::Discovered { tools } => {
+                assert!(
+                    tools.iter().any(|tool| crate::is_wasi_command_export(tool)),
+                    "erwarteter Kommando-Export fehlt in {tools:?}"
+                );
+            }
+            other => panic!("expected discovered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discover_without_load_is_rejected() {
+        let (response, _) = negotiated().handle(Request::Discover);
+        assert!(matches!(response, Response::Error { code, .. } if code == "not-loaded"));
+    }
+
+    #[test]
+    fn invoking_an_unknown_tool_is_rejected() {
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+        let mut session = negotiated();
+        session.handle(load_request(&signing, CapabilityGrants::default()));
+
+        let (response, _) = session.handle(Request::Invoke {
+            tool: "does:not/exist@1.0.0".to_owned(),
+            args: vec![],
+            limits: ExecutionLimits::default(),
+        });
+
+        assert!(matches!(response, Response::Error { code, .. } if code == "invoke-failed"));
     }
 
     #[test]
     fn serve_frames_a_hello_response_then_ends_on_eof() {
         let input = frame(br#"{"type":"hello","protocolVersion":"1"}"#);
         assert!(matches!(first_response(&input), Response::Hello { .. }));
+    }
+
+    /// Reader, der absichtlich nur häppchenweise liefert — bildet echte Pipe-Semantik ab, bei der
+    /// ein `read` weniger Bytes zurückgibt als angefragt.
+    struct ChunkedReader<'a> {
+        data: &'a [u8],
+        chunk: usize,
+    }
+
+    impl Read for ChunkedReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let take = self.chunk.min(buf.len()).min(self.data.len());
+            buf[..take].copy_from_slice(&self.data[..take]);
+            self.data = &self.data[take..];
+            Ok(take)
+        }
+    }
+
+    #[test]
+    fn framing_survives_partial_reads() {
+        let input = frame(br#"{"type":"hello","protocolVersion":"1"}"#);
+        let mut reader = ChunkedReader {
+            data: &input,
+            chunk: 1, // ein Byte pro read — der härteste Fall
+        };
+        let mut output = Vec::new();
+        serve(&mut reader, &mut output).unwrap();
+
+        let len = u32::from_be_bytes(output[..4].try_into().unwrap()) as usize;
+        let response: Response = serde_json::from_slice(&output[4..4 + len]).unwrap();
+        assert!(matches!(response, Response::Hello { .. }));
+    }
+
+    #[test]
+    fn framing_round_trips_across_many_payload_sizes() {
+        // Deterministische Größenreihe statt Zufall: reproduzierbar in CI, deckt Grenzen um
+        // Puffergrößen (1, 255, 256, 4 KiB, 64 KiB …) ab.
+        for size in [0usize, 1, 2, 127, 128, 255, 256, 1023, 4096, 65_535, 65_536] {
+            let response = Response::Invoked {
+                outcome: InvocationOutcome {
+                    stdout: "x".repeat(size),
+                    truncated: false,
+                    result: None,
+                },
+            };
+            let mut buffer = Vec::new();
+            write_frame(&mut buffer, &response).unwrap();
+
+            let body = read_frame_bytes(&mut &buffer[..]).unwrap().unwrap();
+            let decoded: Response = serde_json::from_slice(&body).unwrap();
+            assert_eq!(decoded, response, "round-trip failed for {size} bytes");
+        }
+    }
+
+    #[test]
+    fn an_oversized_length_prefix_is_rejected() {
+        let mut input = (MAX_FRAME_BYTES + 1).to_be_bytes().to_vec();
+        input.extend_from_slice(b"{}");
+
+        let failure = read_frame_bytes(&mut &input[..]).unwrap_err();
+
+        assert!(failure.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn a_truncated_frame_errors_instead_of_hanging() {
+        // Präfix kündigt 64 Byte an, es folgen aber nur 4.
+        let mut input = 64u32.to_be_bytes().to_vec();
+        input.extend_from_slice(b"abcd");
+
+        assert!(read_frame_bytes(&mut &input[..]).is_err());
+    }
+
+    #[test]
+    fn a_clean_eof_between_frames_ends_the_stream() {
+        assert!(read_frame_bytes(&mut &b""[..]).unwrap().is_none());
     }
 
     #[test]

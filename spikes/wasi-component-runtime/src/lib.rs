@@ -278,6 +278,7 @@ pub fn canonical_within_root(root: &Path, target: &Path) -> Result<PathBuf> {
 struct WasiGuestHost {
     ctx: wasmtime_wasi::WasiCtx,
     table: wasmtime::component::ResourceTable,
+    limits: StoreLimits,
 }
 
 impl wasmtime_wasi::WasiView for WasiGuestHost {
@@ -289,46 +290,192 @@ impl wasmtime_wasi::WasiView for WasiGuestHost {
     }
 }
 
-/// Führt die eingebaute Fixture-Guest-Component aus (bequemer Wrapper für Tests).
-pub fn run_wasi_guest(grants: &CapabilityGrants) -> Result<String> {
-    run_wasi_component(WASI_GUEST_COMPONENT, grants)
+/// Präfix des WASI-CLI-Kommando-Exports. Bewusst ohne Versionssuffix: die wasip2-Toolchain
+/// erzeugt je nach WASI-Release `wasi:cli/run@0.2.x`, und der Host soll nicht an einer
+/// Patch-Version zerbrechen. Components mit diesem Export sind ausführbare Kommandos; alles
+/// andere wird als typisierter Funktions-Export aufgerufen.
+pub const WASI_CLI_RUN_PREFIX: &str = "wasi:cli/run";
+
+/// True, wenn der Export-Name den WASI-CLI-Kommando-Einstiegspunkt bezeichnet.
+pub fn is_wasi_command_export(export: &str) -> bool {
+    export.starts_with(WASI_CLI_RUN_PREFIX)
 }
 
-/// Instanziiert und führt eine beliebige WASI-P2-Component aus. WASI wird dem Linker NUR
-/// hinzugefügt, wenn der Environment-Grant vorliegt; ohne Grant bleibt der WASI-Import unerfüllt
-/// und die Instanziierung schlägt VOR jeder Ausführung fehl (deny-before-instantiation). Bei
-/// Erfolg wird `run` ausgeführt und der nach stdout geschriebene Text zurückgegeben.
-pub fn run_wasi_component(component_bytes: &[u8], grants: &CapabilityGrants) -> Result<String> {
+/// Ausführungslimits für einen einzelnen Aufruf (WP1.4). Alle Werte sind pro Invocation gültig;
+/// die Defaults sind bewusst eng — ein Aufrufer, der mehr braucht, muss es explizit anfordern.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionLimits {
+    /// Wasmtime-Fuel (Instruktionsbudget). `None` = kein Fuel-Limit.
+    pub fuel: Option<u64>,
+    /// Wanduhr-Deadline; wird über Epoch-Interruption durchgesetzt.
+    pub timeout_ms: Option<u64>,
+    /// Obergrenze des Linear-Memory der Instanz.
+    pub max_memory_bytes: Option<usize>,
+    /// Obergrenze der eingesammelten stdout-Bytes.
+    pub max_output_bytes: usize,
+}
+
+impl Default for ExecutionLimits {
+    fn default() -> Self {
+        Self {
+            fuel: Some(50_000_000),
+            timeout_ms: Some(5_000),
+            max_memory_bytes: Some(64 * 1024 * 1024),
+            max_output_bytes: 64 * 1024,
+        }
+    }
+}
+
+/// Ergebnis eines Aufrufs samt maschinenlesbaren Truncation-Metadaten.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvocationOutcome {
+    /// Eingesammelte stdout-Ausgabe (bereits auf `max_output_bytes` begrenzt).
+    pub stdout: String,
+    /// True, wenn die Ausgabe das Limit erreicht hat und abgeschnitten sein kann.
+    pub truncated: bool,
+    /// Rückgabewert eines typisierten Exports, falls vorhanden.
+    pub result: Option<i32>,
+}
+
+/// Listet die aufrufbaren Exports (Tools) eines Components. Reine Reflexion — das Component wird
+/// dafür weder instanziiert noch ausgeführt.
+pub fn discover_component_tools(component_bytes: &[u8]) -> Result<Vec<String>> {
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
     let component = Component::from_binary(&engine, component_bytes)?;
+    Ok(component_exports(&engine, &component))
+}
+
+/// Führt die eingebaute Fixture-Guest-Component aus (bequemer Wrapper für Tests).
+pub fn run_wasi_guest(grants: &CapabilityGrants) -> Result<String> {
+    let tool = wasi_command_export(WASI_GUEST_COMPONENT)?;
+    Ok(invoke_component_tool(
+        WASI_GUEST_COMPONENT,
+        grants,
+        &tool,
+        &[],
+        &ExecutionLimits::default(),
+    )?
+    .stdout)
+}
+
+/// Ermittelt den WASI-Kommando-Export eines Components (versionsunabhängig).
+pub fn wasi_command_export(component_bytes: &[u8]) -> Result<String> {
+    discover_component_tools(component_bytes)?
+        .into_iter()
+        .find(|export| is_wasi_command_export(export))
+        .ok_or_else(|| anyhow::anyhow!("component exportiert kein wasi:cli/run"))
+}
+
+/// Instanziiert ein WASI-P2-Component und ruft einen seiner Exports auf. WASI wird dem Linker NUR
+/// hinzugefügt, wenn der Environment-Grant vorliegt; ohne Grant bleibt der WASI-Import unerfüllt
+/// und die Instanziierung schlägt VOR jeder Ausführung fehl (deny-before-instantiation).
+///
+/// `tool` muss ein vorhandener Export sein — ein unbekannter Name wird abgewiesen (fail-closed).
+/// `WASI_CLI_RUN` führt das Component als Kommando aus, jeder andere Export wird als typisierte
+/// Funktion mit `s32`-Argumenten aufgerufen. Alle Limits aus [`ExecutionLimits`] greifen.
+pub fn invoke_component_tool(
+    component_bytes: &[u8],
+    grants: &CapabilityGrants,
+    tool: &str,
+    args: &[i32],
+    limits: &ExecutionLimits,
+) -> Result<InvocationOutcome> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(limits.fuel.is_some());
+    config.epoch_interruption(limits.timeout_ms.is_some());
+    let engine = Engine::new(&config)?;
+    let component = Component::from_binary(&engine, component_bytes)?;
+
+    let exports = component_exports(&engine, &component);
+    if !exports.iter().any(|export| export == tool) {
+        bail!("tool '{tool}' is not exported by this component");
+    }
 
     let mut linker = Linker::<WasiGuestHost>::new(&engine);
     if !grants.environment.is_empty() {
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
     }
 
-    let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(64 * 1024);
+    let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(limits.max_output_bytes);
     let mut builder = wasmtime_wasi::WasiCtxBuilder::new();
     builder.stdout(stdout.clone());
     for key in &grants.environment {
         builder.env(key, "granted");
     }
+
+    let mut store_limits = StoreLimitsBuilder::new();
+    if let Some(max_memory) = limits.max_memory_bytes {
+        store_limits = store_limits
+            .memory_size(max_memory)
+            .trap_on_grow_failure(true);
+    }
     let host = WasiGuestHost {
         ctx: builder.build(),
         table: wasmtime::component::ResourceTable::new(),
+        limits: store_limits.build(),
     };
     let mut store = Store::new(&engine, host);
+    store.limiter(|state: &mut WasiGuestHost| &mut state.limits);
+    if let Some(fuel) = limits.fuel {
+        store.set_fuel(fuel)?;
+    }
 
-    let command =
-        wasmtime_wasi::p2::bindings::sync::Command::instantiate(&mut store, &component, &linker)?;
-    command
-        .wasi_cli_run()
-        .call_run(&mut store)?
-        .map_err(|()| anyhow::anyhow!("guest run returned an error"))?;
+    // Wanduhr-Deadline: ein Wachhund erhöht die Epoche nach dem Timeout, was den Guest trappt.
+    let watchdog = limits.timeout_ms.map(|timeout_ms| {
+        store.set_epoch_deadline(1);
+        let engine = engine.clone();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            if stop_rx
+                .recv_timeout(Duration::from_millis(timeout_ms))
+                .is_err()
+            {
+                engine.increment_epoch();
+            }
+        });
+        (stop_tx, handle)
+    });
 
-    Ok(String::from_utf8_lossy(&stdout.contents()).into_owned())
+    let outcome = (|| -> Result<Option<i32>> {
+        if is_wasi_command_export(tool) {
+            let command = wasmtime_wasi::p2::bindings::sync::Command::instantiate(
+                &mut store, &component, &linker,
+            )?;
+            command
+                .wasi_cli_run()
+                .call_run(&mut store)?
+                .map_err(|()| anyhow::anyhow!("guest run returned an error"))?;
+            Ok(None)
+        } else {
+            let instance = linker.instantiate(&mut store, &component)?;
+            let func = instance
+                .get_typed_func::<(i32,), (i32,)>(&mut store, tool)
+                .map_err(|error| {
+                    anyhow::anyhow!("export '{tool}' is not a (s32) -> s32 function: {error}")
+                })?;
+            let argument = args.first().copied().unwrap_or_default();
+            let (result,) = func.call(&mut store, (argument,))?;
+            Ok(Some(result))
+        }
+    })();
+
+    if let Some((stop_tx, handle)) = watchdog {
+        let _ = stop_tx.send(());
+        let _ = handle.join();
+    }
+
+    let result = outcome?;
+    let bytes = stdout.contents();
+    Ok(InvocationOutcome {
+        truncated: bytes.len() >= limits.max_output_bytes,
+        stdout: String::from_utf8_lossy(&bytes).into_owned(),
+        result,
+    })
 }
 
 pub fn discover_wit(path: &Path, world_name: &str) -> Result<CapabilityInventory> {
@@ -1096,6 +1243,73 @@ mod tests {
         assert!(
             output.contains("mcpmcp-guest-ok"),
             "unexpected guest output: {output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discover_lists_exports_without_executing() -> Result<()> {
+        let engine = hardened_engine(false, false)?;
+        let (bytes, _) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+
+        assert_eq!(discover_component_tools(&bytes)?, ["run"]);
+        let guest_tools = discover_component_tools(WASI_GUEST_COMPONENT)?;
+        assert!(
+            guest_tools.iter().any(|tool| is_wasi_command_export(tool)),
+            "kein WASI-Kommando-Export gefunden in {guest_tools:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typed_export_is_invoked_with_its_argument() -> Result<()> {
+        let engine = hardened_engine(false, false)?;
+        let (bytes, _) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+
+        let outcome = invoke_component_tool(
+            &bytes,
+            &CapabilityGrants::default(),
+            "run",
+            &[41],
+            &ExecutionLimits::default(),
+        )?;
+
+        assert_eq!(outcome.result, Some(42));
+        assert!(!outcome.truncated);
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected_before_execution() -> Result<()> {
+        let engine = hardened_engine(false, false)?;
+        let (bytes, _) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+
+        let failure = invoke_component_tool(
+            &bytes,
+            &CapabilityGrants::default(),
+            "nope",
+            &[],
+            &ExecutionLimits::default(),
+        )
+        .unwrap_err();
+
+        assert!(failure.to_string().contains("not exported"));
+        Ok(())
+    }
+
+    #[test]
+    fn per_invocation_fuel_limit_is_enforced() -> Result<()> {
+        let engine = hardened_engine(false, false)?;
+        let (bytes, _) = compile_component(&engine, NO_IMPORT_COMPONENT)?;
+        let starved = ExecutionLimits {
+            fuel: Some(1),
+            ..ExecutionLimits::default()
+        };
+
+        assert!(
+            invoke_component_tool(&bytes, &CapabilityGrants::default(), "run", &[41], &starved)
+                .is_err(),
+            "ein Fuel-Budget von 1 muss den Aufruf abbrechen"
         );
         Ok(())
     }
