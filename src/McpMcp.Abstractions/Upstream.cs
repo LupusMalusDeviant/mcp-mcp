@@ -7,6 +7,7 @@ public enum UpstreamTransportKind
     Stdio = 0,
     StreamableHttp = 1,
     OpenApi = 2,
+    Cli = 3,
 }
 
 public enum UpstreamState
@@ -55,6 +56,32 @@ public sealed record OpenApiTransportOptions(
     string? Credential = null,
     string? ApiKeyHeaderName = null);
 
+/// <summary>
+/// CLI-Programm als virtueller Upstream (ADR-0014). <see cref="Executable"/> ist pro Upstream fix
+/// (implizite Allowlist genau eines Binaries); jedes <see cref="CliToolSpec"/> wird ein Tool.
+/// Die Ausführung ist strikt shell-frei (ArgumentList) — Aufrufer-Argumente werden literal hinter
+/// die festen Argumente gehängt, nie in eine Shell interpoliert. <see cref="MaxOutputBytes"/>
+/// begrenzt die zurückgegebene Ausgabe (Memory-/Kontext-Schutz).
+/// </summary>
+public sealed record CliTransportOptions(
+    string Executable,
+    IReadOnlyList<CliToolSpec> Tools,
+    string? WorkingDirectory = null,
+    IReadOnlyDictionary<string, string>? EnvironmentVariables = null,
+    int? TimeoutSeconds = null,
+    int MaxOutputBytes = 64 * 1024);
+
+/// <summary>
+/// Ein benanntes CLI-Kommando = ein Tool. <see cref="FixedArguments"/> stehen fest; ist
+/// <see cref="AllowCallerArguments"/> true, hängt der Aufrufer über das Tool-Argument
+/// <c>args</c> (string[]) weitere Argumente an — sonst läuft nur das feste Kommando.
+/// </summary>
+public sealed record CliToolSpec(
+    string Name,
+    string? Description = null,
+    IReadOnlyList<string>? FixedArguments = null,
+    bool AllowCallerArguments = true);
+
 public sealed record RestartPolicy(
     int MaxRetries,
     TimeSpan InitialBackoff,
@@ -77,7 +104,8 @@ public sealed record UpstreamServerConfig(
     HttpTransportOptions? Http = null,
     OpenApiTransportOptions? OpenApi = null,
     RestartPolicy? Restart = null,
-    TimeSpan? CallTimeout = null);
+    TimeSpan? CallTimeout = null,
+    CliTransportOptions? Cli = null);
 
 public sealed record ToolDescriptor(string Name, string? Description, JsonElement InputSchema);
 

@@ -113,6 +113,7 @@ builder.Services.AddSingleton<McpMcp.Web.UiInternalIdentity>();
 builder.Services.AddSingleton<IUpstreamConnector, StdioUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConnector, StreamableHttpUpstreamConnector>();
 builder.Services.AddSingleton<IUpstreamConnector, McpMcp.Upstream.OpenApi.OpenApiUpstreamConnector>();
+builder.Services.AddSingleton<IUpstreamConnector, McpMcp.Upstream.Cli.CliUpstreamConnector>(); // ADR-0014
 builder.Services.AddSingleton<IUpstreamConfigStore, EfUpstreamConfigStore>();
 builder.Services.AddSingleton<IUpstreamConnectionTester, UpstreamConnectionTester>();
 builder.Services.AddSingleton(new SupervisorOptions());

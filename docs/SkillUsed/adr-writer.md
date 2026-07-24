@@ -1,5 +1,22 @@
 # Skill-Log: adr-writer
 
+## 2026-07-24 — Run
+
+**Aufgabe:** ADR für CLI-Programme als vierten Upstream-Transport (UpstreamTransportKind.Cli) schreiben.
+
+**Entscheidungen:**
+- Kontext/Optionen/Entscheidung vollständig im Prompt vorgegeben → keine Rückfragen nötig; Status „Akzeptiert" (Bau ist beauftragt).
+- Supersede: nein — additiv, ergänzt die Connector-Familie (ADR-0005/0008), ersetzt nichts.
+- Index docs/adr/README.md um Zeile 0014 erweitert.
+
+**Artefakte:**
+- docs/adr/0014-cli-programme-als-upstream-transport.md
+- docs/adr/README.md (Index-Zeile 0014)
+
+**Status:** abgeschlossen
+
+---
+
 ## 2026-07-17 — Run
 
 **Aufgabe:** Initialer ADR-Satz (8 Entscheidungen) für MCP-MCP aus PRD 0001 ableiten.

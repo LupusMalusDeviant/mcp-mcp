@@ -67,6 +67,7 @@ public static partial class UpstreamConfigValidator
             UpstreamTransportKind.Stdio => ("Stdio", config.Stdio is not null),
             UpstreamTransportKind.StreamableHttp => ("Http", config.Http is not null),
             UpstreamTransportKind.OpenApi => ("OpenApi", config.OpenApi is not null),
+            UpstreamTransportKind.Cli => ("Cli", config.Cli is not null),
             _ => throw new ArgumentException($"Unbekannter Transport: {config.Kind}.", nameof(config)),
         };
 
@@ -81,6 +82,7 @@ public static partial class UpstreamConfigValidator
             (Name: "Stdio", Set: config.Stdio is not null, For: UpstreamTransportKind.Stdio),
             (Name: "Http", Set: config.Http is not null, For: UpstreamTransportKind.StreamableHttp),
             (Name: "OpenApi", Set: config.OpenApi is not null, For: UpstreamTransportKind.OpenApi),
+            (Name: "Cli", Set: config.Cli is not null, For: UpstreamTransportKind.Cli),
         };
         foreach (var extra in extras)
         {
@@ -95,6 +97,30 @@ public static partial class UpstreamConfigValidator
         if (config.Kind == UpstreamTransportKind.Stdio && string.IsNullOrWhiteSpace(config.Stdio!.Command))
         {
             throw new ArgumentException("Stdio.Command darf nicht leer sein.", nameof(config));
+        }
+
+        if (config.Kind == UpstreamTransportKind.Cli)
+        {
+            var cli = config.Cli!;
+            if (string.IsNullOrWhiteSpace(cli.Executable))
+            {
+                throw new ArgumentException("Cli.Executable darf nicht leer sein.", nameof(config));
+            }
+
+            if (cli.Tools is null || cli.Tools.Count == 0)
+            {
+                throw new ArgumentException("Cli verlangt mindestens ein Tool (CliToolSpec).", nameof(config));
+            }
+
+            if (cli.Tools.Any(t => string.IsNullOrWhiteSpace(t.Name)))
+            {
+                throw new ArgumentException("Jeder CliToolSpec braucht einen nicht-leeren Namen.", nameof(config));
+            }
+
+            if (cli.TimeoutSeconds is { } ts && ts <= 0)
+            {
+                throw new ArgumentException("Cli.TimeoutSeconds muss positiv sein.", nameof(config));
+            }
         }
     }
 }

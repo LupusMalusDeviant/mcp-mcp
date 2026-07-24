@@ -30,6 +30,7 @@ Ein Architecture Decision Record dokumentiert eine einzelne, wichtige Architektu
 | [0011](./0011-secret-erkennung-als-guardrail.md) | Secret-Erkennung als hot-swappable Guardrail im Invoker | Akzeptiert | 2026-07-20 | — |
 | [0012](./0012-approval-flows-asynchron.md) | Approval-Flows asynchron (sofort ablehnen, Freigabe pro Call) statt blockierend | Akzeptiert | 2026-07-20 | — |
 | [0013](./0013-webhook-trigger.md) | Webhook-Trigger — HMAC-signiert, ein Tool, feste Identität (Ketten als v2) | Akzeptiert | 2026-07-20 | — |
+| [0014](./0014-cli-programme-als-upstream-transport.md) | CLI-Programme als vierter Upstream-Transport | Akzeptiert | 2026-07-24 | — |
 
 ## Beitragen
 
