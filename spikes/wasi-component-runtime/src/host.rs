@@ -10,9 +10,15 @@
 use std::io::{self, Read, Write};
 
 use anyhow::{Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
-use crate::RUNTIME_VERSION;
+use crate::{
+    CapabilityGrants, GrantAuditRecord, RUNTIME_VERSION, grant_audit_record, pinned_publisher,
+    run_wasi_component, verify_component_signature,
+};
 
 /// Protokollversion des IPC-Vertrags. Inkompatible Versionen werden beim Handshake abgewiesen.
 pub const PROTOCOL_VERSION: &str = "1";
@@ -29,6 +35,22 @@ pub enum Request {
         #[serde(rename = "protocolVersion")]
         protocol_version: String,
     },
+    /// Lädt ein Component: Signatur gegen die gepinnten Publisher prüfen, Grants übernehmen.
+    /// Alle Byte-Felder sind Base64 (JSON-tauglich, keine Sonderzeichen).
+    Load {
+        /// Component-Bytes, Base64.
+        component: String,
+        /// Detached Ed25519-Signatur (64 Byte), Base64.
+        signature: String,
+        /// Administrativ gepinnte Publisher-Public-Keys (je 32 Byte), Base64.
+        #[serde(rename = "pinnedPublishers")]
+        pinned_publishers: Vec<String>,
+        /// Erteilte Host-Grants; fehlend = default-deny.
+        #[serde(default)]
+        grants: CapabilityGrants,
+    },
+    /// Führt das geladene Component aus.
+    Invoke,
     /// Liveness/Readiness-Abfrage.
     Health,
     /// Ordentlicher Shutdown.
@@ -44,6 +66,12 @@ pub enum Response {
         protocol_version: String,
         runtime: String,
         host: String,
+    },
+    Loaded {
+        audit: GrantAuditRecord,
+    },
+    Invoked {
+        stdout: String,
     },
     Health {
         status: String,
@@ -67,7 +95,24 @@ pub enum Control {
 #[derive(Debug, Default)]
 pub struct Session {
     negotiated: bool,
-    loaded: bool,
+    loaded: Option<LoadedComponent>,
+}
+
+/// Ein verifiziertes, geladenes Component samt den dafür erteilten Grants.
+#[derive(Debug)]
+struct LoadedComponent {
+    bytes: Vec<u8>,
+    grants: CapabilityGrants,
+}
+
+fn error(code: &str, message: impl Into<String>) -> (Response, Control) {
+    (
+        Response::Error {
+            code: code.to_owned(),
+            message: message.into(),
+        },
+        Control::Continue,
+    )
 }
 
 impl Session {
@@ -96,15 +141,74 @@ impl Session {
                     Control::Continue,
                 )
             }
+            Request::Load {
+                component,
+                signature,
+                pinned_publishers,
+                grants,
+            } => {
+                if !self.negotiated {
+                    return error("handshake-required", "hello muss vor load gesendet werden");
+                }
+                match self.load(&component, &signature, &pinned_publishers, grants) {
+                    Ok(audit) => (Response::Loaded { audit }, Control::Continue),
+                    Err(failure) => error("load-rejected", failure.to_string()),
+                }
+            }
+            Request::Invoke => {
+                let Some(loaded) = self.loaded.as_ref() else {
+                    return error("not-loaded", "kein Component geladen — load zuerst senden");
+                };
+                match run_wasi_component(&loaded.bytes, &loaded.grants) {
+                    Ok(stdout) => (Response::Invoked { stdout }, Control::Continue),
+                    Err(failure) => error("invoke-failed", failure.to_string()),
+                }
+            }
             Request::Health => (
                 Response::Health {
                     status: "ok".to_owned(),
-                    loaded: self.loaded,
+                    loaded: self.loaded.is_some(),
                 },
                 Control::Continue,
             ),
             Request::Shutdown => (Response::Bye, Control::Stop),
         }
+    }
+
+    /// Dekodiert, verifiziert und übernimmt ein Component. Fail-closed: ohne gültige Signatur
+    /// eines gepinnten Publishers wird nichts geladen und der bisherige Zustand bleibt unberührt.
+    fn load(
+        &mut self,
+        component_b64: &str,
+        signature_b64: &str,
+        pinned_b64: &[String],
+        grants: CapabilityGrants,
+    ) -> Result<GrantAuditRecord> {
+        let component = BASE64.decode(component_b64)?;
+        let signature: [u8; 64] = BASE64
+            .decode(signature_b64)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Signatur muss genau 64 Byte lang sein"))?;
+
+        if pinned_b64.is_empty() {
+            bail!("kein gepinnter Publisher übergeben — fail-closed");
+        }
+        let mut pinned = Vec::with_capacity(pinned_b64.len());
+        for encoded in pinned_b64 {
+            let key: [u8; 32] = BASE64
+                .decode(encoded)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Publisher-Key muss genau 32 Byte lang sein"))?;
+            pinned.push(pinned_publisher(VerifyingKey::from_bytes(&key)?));
+        }
+
+        let publisher_key_id = verify_component_signature(&component, &signature, &pinned)?;
+        let audit = grant_audit_record(&component, &publisher_key_id, &grants);
+        self.loaded = Some(LoadedComponent {
+            bytes: component,
+            grants,
+        });
+        Ok(audit)
     }
 }
 
@@ -167,7 +271,29 @@ pub fn serve<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
+
     use super::*;
+
+    const GUEST: &[u8] = include_bytes!("../fixtures/wasi-p2-guest.component.wasm");
+
+    /// Session nach erfolgreichem Handshake.
+    fn negotiated() -> Session {
+        let mut session = Session::default();
+        session.handle(Request::Hello {
+            protocol_version: PROTOCOL_VERSION.to_owned(),
+        });
+        session
+    }
+
+    fn load_request(signing: &SigningKey, grants: CapabilityGrants) -> Request {
+        Request::Load {
+            component: BASE64.encode(GUEST),
+            signature: BASE64.encode(signing.sign(GUEST).to_bytes()),
+            pinned_publishers: vec![BASE64.encode(signing.verifying_key().as_bytes())],
+            grants,
+        }
+    }
 
     fn frame(bytes: &[u8]) -> Vec<u8> {
         let len = u32::try_from(bytes.len()).unwrap();
@@ -232,6 +358,101 @@ mod tests {
                 loaded: false,
             }
         );
+    }
+
+    #[test]
+    fn load_requires_a_handshake_first() {
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+        let (response, _) =
+            Session::default().handle(load_request(&signing, CapabilityGrants::default()));
+        assert!(matches!(response, Response::Error { code, .. } if code == "handshake-required"));
+    }
+
+    #[test]
+    fn load_verifies_signature_and_returns_the_audit_record() {
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+        let mut session = negotiated();
+
+        let (response, control) =
+            session.handle(load_request(&signing, CapabilityGrants::default()));
+
+        assert_eq!(control, Control::Continue);
+        match response {
+            Response::Loaded { audit } => {
+                assert_eq!(audit.module_sha256, crate::sha256_hex(GUEST));
+                assert_eq!(audit.runtime, RUNTIME_VERSION);
+                assert!(audit.granted_filesystem_preopens.is_empty());
+            }
+            other => panic!("expected loaded, got {other:?}"),
+        }
+        // health spiegelt den Ladezustand.
+        let (health, _) = session.handle(Request::Health);
+        assert_eq!(
+            health,
+            Response::Health {
+                status: "ok".to_owned(),
+                loaded: true,
+            }
+        );
+    }
+
+    #[test]
+    fn load_is_rejected_for_an_unpinned_publisher() {
+        let trusted = SigningKey::from_bytes(&[1u8; 32]);
+        let rogue = SigningKey::from_bytes(&[2u8; 32]);
+        let mut session = negotiated();
+
+        let (response, _) = session.handle(Request::Load {
+            component: BASE64.encode(GUEST),
+            signature: BASE64.encode(rogue.sign(GUEST).to_bytes()),
+            pinned_publishers: vec![BASE64.encode(trusted.verifying_key().as_bytes())],
+            grants: CapabilityGrants::default(),
+        });
+
+        assert!(matches!(response, Response::Error { code, .. } if code == "load-rejected"));
+    }
+
+    #[test]
+    fn load_without_any_pinned_publisher_fails_closed() {
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+        let mut session = negotiated();
+
+        let (response, _) = session.handle(Request::Load {
+            component: BASE64.encode(GUEST),
+            signature: BASE64.encode(signing.sign(GUEST).to_bytes()),
+            pinned_publishers: vec![],
+            grants: CapabilityGrants::default(),
+        });
+
+        assert!(matches!(response, Response::Error { code, .. } if code == "load-rejected"));
+    }
+
+    #[test]
+    fn invoke_without_load_is_rejected() {
+        let (response, _) = negotiated().handle(Request::Invoke);
+        assert!(matches!(response, Response::Error { code, .. } if code == "not-loaded"));
+    }
+
+    #[test]
+    fn invoke_runs_only_with_granted_capabilities() {
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+
+        // Ohne Grant: WASI wird nicht gelinkt -> Ausfuehrung scheitert vor dem Start.
+        let mut denied = negotiated();
+        denied.handle(load_request(&signing, CapabilityGrants::default()));
+        let (response, _) = denied.handle(Request::Invoke);
+        assert!(matches!(response, Response::Error { code, .. } if code == "invoke-failed"));
+
+        // Mit Environment-Grant laeuft die echte Component.
+        let mut grants = CapabilityGrants::default();
+        grants.environment.insert("MCPMCP_SPIKE".to_owned());
+        let mut allowed = negotiated();
+        allowed.handle(load_request(&signing, grants));
+        let (response, _) = allowed.handle(Request::Invoke);
+        match response {
+            Response::Invoked { stdout } => assert!(stdout.contains("mcpmcp-guest-ok")),
+            other => panic!("expected invoked, got {other:?}"),
+        }
     }
 
     #[test]

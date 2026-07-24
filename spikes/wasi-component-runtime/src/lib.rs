@@ -196,12 +196,12 @@ pub fn verify_component_signature(
 /// Auditdatensatz beim Laden/Instanziieren eines Components: identifiziert das Modul über seinen
 /// SHA-256, den akzeptierenden Publisher, die Runtime-Version und die tatsächlich erteilten
 /// Host-Grants. Deterministisch serialisierbar für das Governance-Audit.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrantAuditRecord {
     pub module_sha256: String,
     pub publisher_key_id: String,
-    pub runtime: &'static str,
+    pub runtime: String,
     pub granted_filesystem_preopens: Vec<String>,
     pub granted_network_allow: Vec<String>,
     pub granted_environment: Vec<String>,
@@ -220,7 +220,7 @@ pub fn grant_audit_record(
     GrantAuditRecord {
         module_sha256: sha256_hex(component_bytes),
         publisher_key_id: publisher_key_id.to_owned(),
-        runtime: RUNTIME_VERSION,
+        runtime: RUNTIME_VERSION.to_owned(),
         granted_filesystem_preopens: grants.filesystem_preopens.iter().cloned().collect(),
         granted_network_allow: grants.network_allow.iter().cloned().collect(),
         granted_environment: grants.environment.iter().cloned().collect(),
@@ -289,15 +289,20 @@ impl wasmtime_wasi::WasiView for WasiGuestHost {
     }
 }
 
-/// Instanziiert die echte WASI-P2-Guest-Component. WASI wird dem Linker NUR hinzugefügt, wenn der
-/// Environment-Grant vorliegt; ohne Grant bleibt der WASI-Import unerfüllt und die Instanziierung
-/// schlägt VOR jeder Ausführung fehl (deny-before-instantiation). Bei Erfolg wird `run` ausgeführt
-/// und der von der Component nach stdout geschriebene Text zurückgegeben.
+/// Führt die eingebaute Fixture-Guest-Component aus (bequemer Wrapper für Tests).
 pub fn run_wasi_guest(grants: &CapabilityGrants) -> Result<String> {
+    run_wasi_component(WASI_GUEST_COMPONENT, grants)
+}
+
+/// Instanziiert und führt eine beliebige WASI-P2-Component aus. WASI wird dem Linker NUR
+/// hinzugefügt, wenn der Environment-Grant vorliegt; ohne Grant bleibt der WASI-Import unerfüllt
+/// und die Instanziierung schlägt VOR jeder Ausführung fehl (deny-before-instantiation). Bei
+/// Erfolg wird `run` ausgeführt und der nach stdout geschriebene Text zurückgegeben.
+pub fn run_wasi_component(component_bytes: &[u8], grants: &CapabilityGrants) -> Result<String> {
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
-    let component = Component::from_binary(&engine, WASI_GUEST_COMPONENT)?;
+    let component = Component::from_binary(&engine, component_bytes)?;
 
     let mut linker = Linker::<WasiGuestHost>::new(&engine);
     if !grants.environment.is_empty() {
