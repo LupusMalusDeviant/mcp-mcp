@@ -100,7 +100,8 @@ The full design documentation lives in [`docs/`](docs/) — written in **German*
 | M4 "v1.0" | Web UI, hardening, security audit, Docker release | ✅ done |
 | M5 "Gap closure" | 23 planned-but-missing items found by independent requirement-versus-code audits, incl. the redaction defect | ✅ done, unreleased |
 | M6 "Guardrails" | Secret detection in the invoker — blocks credentials in tool arguments and results, runtime-editable rules ([ADR-0011](docs/adr/0011-secret-erkennung-als-guardrail.md)) | ✅ done, unreleased |
-| M7 "Corrected release" | [Acceptance rewritten against the actual state](docs/acceptance/v1.2.md); release itself still pending | 🔄 acceptance ✅, release open |
+| M7 "All optional reqs" | Every Kann-requirement decided: approval flows ([ADR-0012](docs/adr/0012-approval-flows-asynchron.md)) and signed webhook triggers ([ADR-0013](docs/adr/0013-webhook-trigger.md)) built; FR-04 documented as a deviation | ✅ done, unreleased |
+| M8 "Corrected release" | [Acceptance rewritten against the actual state](docs/acceptance/v1.2.md); release itself still pending | 🔄 acceptance ✅, release open |
 
 ## License
 
