@@ -181,20 +181,29 @@ public class SecretGuardTests
         var payload = $$"""{"items":[{{string.Join(",", Enumerable.Range(0, 200).Select(i => $$"""{"id":{{i}},"name":"eintrag-{{i}}","sha":"e83c5163316f89bfbde7d9ab23ca2e25604af290"}"""))}}]}""";
         payload.Length.Should().BeGreaterThan(10_000, "aussagekräftige Größenordnung");
 
+        // Warmup (JIT + Regex-Kompilierung).
         for (var i = 0; i < 20; i++)
         {
             guard.Inspect(payload, GuardDirection.Inbound);
         }
 
-        var sw = Stopwatch.StartNew();
-        for (var i = 0; i < 100; i++)
+        // Wall-Clock schwankt auf geteilter CI-Hardware. Deshalb mehrere Batches messen und den
+        // SCHNELLSTEN auswerten: ein einzelner GC-/Scheduling-Ausreißer darf den Gate nicht kippen,
+        // eine echte Regression (dauerhaft > 1 ms) fällt aber in ALLEN Batches durch.
+        var bestPerCallMs = double.MaxValue;
+        for (var batch = 0; batch < 5; batch++)
         {
-            guard.Inspect(payload, GuardDirection.Inbound);
+            var sw = Stopwatch.StartNew();
+            for (var i = 0; i < 100; i++)
+            {
+                guard.Inspect(payload, GuardDirection.Inbound);
+            }
+
+            sw.Stop();
+            bestPerCallMs = Math.Min(bestPerCallMs, sw.Elapsed.TotalMilliseconds / 100);
         }
 
-        sw.Stop();
-        var perCallMs = sw.Elapsed.TotalMilliseconds / 100;
-        perCallMs.Should().BeLessThan(1.0,
-            $"gemessen wurden ~0,05 ms; 1 ms ist eine großzügige Obergrenze (ist: {perCallMs:0.000} ms)");
+        bestPerCallMs.Should().BeLessThan(1.0,
+            $"lokal ~0,05 ms; 1 ms ist eine großzügige Obergrenze für den schnellsten Batch (ist: {bestPerCallMs:0.000} ms)");
     }
 }
